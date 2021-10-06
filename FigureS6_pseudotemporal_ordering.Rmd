@@ -1,0 +1,1596 @@
+---
+title: "Figure S6 Pseudotemporal ordering" 
+subtitle: "Pseudotemporal ordering of neuronal populations in the spinal cord, hindbrain and forebrain"
+output:
+  pdf_document: 
+    dev: png
+  html_document: default
+---
+
+```{r wrap-hook, include = FALSE}
+library(knitr)
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x <- knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x <- strwrap(x, width = n)
+    x <- paste(x, collapse = "\n")
+  }
+  hook_output(x, options)
+})
+```
+
+This documents details the steps for the generation of pseudotemporal expression profiles described in  "Temporal patterning of the central nervous system by a shared transcription factor code" by Sagner et al. 2021.
+
+```{r Declare libraries and functions, message=FALSE, warning=FALSE, include=FALSE}
+## Declare libraries ----
+ 
+dir <- "/Users/sagnera/Documents/tTF_paper_2020/scRNAseq"
+##dir <- '/Users/user/Documents/tTF_paper_2020/scRNAseq/'
+ 
+setwd(paste0(dir, "/output/"))
+ 
+library(Biobase)
+library(slingshot)
+library(Seurat)
+library(dplyr)
+library(scales)
+library(loomR)
+library(ggplot2)
+library(tibble)
+library(viridis)
+ 
+## Declare functions ----
+ 
+#' Assign a color to each cell based on some value
+#'
+#' @param cell_vars Vector indicating the value of a variable associated with cells.
+#' @param pal_fun Palette function that returns a vector of hex colors, whose
+#' argument is the length of such a vector.
+#' @param ... Extra arguments for pal_fun.
+#' @return A vector of hex colors with one entry for each cell.
+ 
+cell_pal <- function(cell_vars, pal_fun, ...) {
+  if (is.numeric(cell_vars)) {
+    pal <- pal_fun(100, ...)
+    return(pal[cut(cell_vars, breaks = 100)])
+  } else {
+    categories <- sort(unique(cell_vars))
+    pal <- setNames(pal_fun(length(categories), ...), categories)
+    return(pal[cell_vars])
+  }
+}
+ 
+## function for plotting genes in pseudotime from spinal cord scRNAseq data (Delile et al.; Development, 2019)
+plot.gene.in.pseudotime <- function(gene = c("Ascl1", "Nfib"),
+                                    pt.mtx = pt,
+                                    seurat.object = V2.neurons,
+                                    exclude.timepoint = c(9.5),
+                                    exclude.curve = "curve4",
+                                    plot.title = "dI5") {
+  if (is.null(exclude.curve)) {
+    print("No curve excluded!")
+  } else {
+    print(paste0("Exclude ", exclude.curve))
+    pt.mtx <- pt.mtx[, -which(colnames(pt.mtx) %in% exclude.curve)]
+  }
+ 
+  if (length(gene > 1)) {
+    data <- t(GetAssayData(object = seurat.object, assay = "RNA")[gene, ])
+  } else {
+    data <- as.data.frame(GetAssayData(object = seurat.object, assay = "RNA")[gene, ])
+    colnames(data) <- gene
+  }
+ 
+  pt.mtx <- do.call(cbind, list(pt.mtx, data,
+    timepoint = seurat.object$timepoint
+  )) %>%
+    as.data.frame() %>%
+    tidyr::gather(key = curve, pseudotime, -gene, -timepoint) %>%
+    tidyr::gather(key = gene_name, gene_expression, -timepoint, -curve, -pseudotime)
+ 
+  if (is.null(exclude.timepoint)) {
+    print("No timepoints excluded!")
+  } else {
+    print(paste0("Exclude timepoint ", exclude.timepoint))
+    pt.mtx <- pt.mtx[-which(pt.mtx$timepoint %in% exclude.timepoint), ]
+  }
+ 
+  pt.mtx$timepoint <- factor(as.character(pt.mtx$timepoint), levels = unique(pt.mtx$timepoint))
+  pt.mtx$gene_name <- factor(pt.mtx$gene_name, levels = gene)
+ 
+  pt.mtx <- pt.mtx[!is.na(pt.mtx$pseudotime), ]
+ 
+  gg <- ggplot(pt.mtx, aes(x = pseudotime, y = gene_expression, color = timepoint)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~gene_name)
+ 
+  df <- as.data.frame(ggplot_build(gg)[[1]])
+ 
+  df$gene <- factor(gene[df$PANEL], levels = unique(gene[df$PANEL]))
+ 
+  range <- df %>%
+    mutate(bin = cut(x, 30)) %>%
+    group_by(gene, group, bin) %>%
+    summarise(mean = mean(y)) %>%
+    ungroup() %>%
+    group_by(gene) %>%
+    summarise(
+      min = min(mean),
+      max = max(mean)
+    )
+ 
+  df$min <- unlist(lapply(df$gene, function(x) {
+    return(range[range$gene == x, "min"])
+  }))
+ 
+  df$max <- unlist(lapply(df$gene, function(x) {
+    return(range[range$gene == x, "max"])
+  }))
+ 
+  df$norm <- (df$y - df$min) / (df$max - df$min)
+ 
+  df$timepoint <- unique(pt.mtx$timepoint)[df$group]
+ 
+  df$timepoint.label <- unlist(lapply(df$timepoint, function(x) {
+    paste0("e", x)
+  }))
+ 
+ 
+  ggplot(df, aes(x = cut(x, 30), y = gene, fill = norm)) +
+    geom_tile(expand = FALSE) +
+    scale_fill_viridis() +
+    scale_y_discrete(expand = c(0, 0)) +
+    theme_bw() +
+    labs(title = plot.title) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(size = 7, face = "italic"),
+      axis.ticks.x = element_blank(),
+      axis.title = element_blank(),
+      axis.line = element_blank(),
+      legend.position = "none",
+      plot.title = element_text(size = 10),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.spacing.x = unit(0, "cm"),
+      panel.spacing.y = unit(0, "cm"),
+      plot.margin = unit(c(0, 0, 0, 0), "cm"),
+      panel.border = element_rect(colour = "black", fill = NA, size = 0.5),
+      plot.background = element_blank(),
+      strip.text.x = element_text(size = 7)
+    ) +
+    facet_wrap(~timepoint.label, nrow = 1)
+}
+ 
+### plot pseudotime of neuronal populations from loom files
+### works as plot.gene.in.pseudotime
+plot.gene.in.pseudotime.loom <- function(gene = c("Ascl1", "Nfib"),
+                                         pt.mtx = pt,
+                                         seurat.object = V2.neurons,
+                                         exclude.timepoint = c("e9.0"),
+                                         exclude.curve = NULL,
+                                         plot.title = "Cajal-Retzius neurons",
+                                         order.timepoints = c("e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5")) {
+  if (is.null(exclude.curve)) {
+    print("No curve excluded!")
+  } else {
+    print(paste0("Exclude ", exclude.curve))
+    pt.mtx <- pt.mtx[, -which(colnames(pt.mtx) %in% exclude.curve)]
+  }
+ 
+  if (length(gene > 1)) {
+    data <- t(GetAssayData(object = seurat.object, assay = "RNA", slot = "scale.data")[gene, ])
+  } else {
+    data <- as.data.frame(GetAssayData(object = seurat.object, assay = "RNA")[gene, ])
+    colnames(data) <- gene
+  }
+ 
+  pt.mtx <- do.call(cbind, list(data.frame(pt.mtx), data,
+    timepoint = seurat.object$age
+  )) %>%
+    as.data.frame() %>%
+    tidyr::gather(key = curve, pseudotime, -gene, -timepoint) %>%
+    tidyr::gather(key = gene_name, gene_expression, -timepoint, -curve, -pseudotime)
+ 
+  if (is.null(exclude.timepoint)) {
+    print("No timepoints excluded!")
+  } else {
+    print(paste0("Exclude timepoint ", exclude.timepoint))
+    pt.mtx <- pt.mtx[-which(pt.mtx$timepoint %in% exclude.timepoint), ]
+  }
+ 
+  pt.mtx <- pt.mtx %>%
+    dplyr::mutate(age = gsub("e", "", timepoint)) %>%
+    dplyr::mutate(age = as.numeric(age))
+ 
+  pt.mtx <- pt.mtx[order(pt.mtx$age), ]
+ 
+  pt.mtx$timepoint <- factor(as.character(pt.mtx$timepoint), levels = unique(pt.mtx$timepoint))
+  pt.mtx$gene_name <- factor(pt.mtx$gene_name, levels = gene)
+ 
+  pt.mtx <- pt.mtx[!is.na(pt.mtx$pseudotime), ]
+ 
+  gg <- ggplot(pt.mtx, aes(x = pseudotime, y = as.numeric(gene_expression), color = timepoint)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~gene_name)
+ 
+  df <- as.data.frame(ggplot_build(gg)[[1]])
+ 
+  df$gene <- factor(gene[df$PANEL], levels = unique(gene[df$PANEL]))
+ 
+  range <- df %>%
+    mutate(bin = cut(x, 30)) %>%
+    group_by(gene, group, bin) %>%
+    summarise(mean = mean(y)) %>%
+    ungroup() %>%
+    group_by(gene) %>%
+    summarise(
+      min = min(mean),
+      max = max(mean)
+    )
+ 
+  df$min <- unlist(lapply(df$gene, function(x) {
+    return(range[range$gene == x, "min"])
+  }))
+ 
+  df$max <- unlist(lapply(df$gene, function(x) {
+    return(range[range$gene == x, "max"])
+  }))
+ 
+  df$norm <- (df$y - df$min) / (df$max - df$min)
+ 
+  df$timepoint <- unique(pt.mtx$timepoint)[df$group]
+ 
+  ggplot(df, aes(x = cut(x, 30), y = gene, fill = norm)) +
+    geom_tile(expand = FALSE) +
+    scale_fill_viridis() +
+    scale_y_discrete(expand = c(0, 0)) +
+    theme_bw() +
+    labs(title = plot.title) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(size = 7, face = "italic"),
+      axis.ticks.x = element_blank(),
+      axis.title = element_blank(),
+      axis.line = element_blank(),
+      legend.position = "none",
+      plot.title = element_text(size = 10),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.spacing.x = unit(0, "cm"),
+      panel.spacing.y = unit(0, "cm"),
+      plot.margin = unit(c(0, 0, 0, 0), "cm"),
+      panel.border = element_rect(colour = "black", fill = NA, size = 0.5),
+      plot.background = element_blank(),
+      strip.text.x = element_text(size = 7)
+    ) +
+    facet_wrap(~timepoint, nrow = 1)
+}
+ 
+## Function to plot pseudotime curves
+ 
+#' @param number.colomns Parameter controlling how many pseudotime curves should be per row
+#' @param slingshot.object Slingshot object generated by R Slingshot library
+#' @param cell.colors Colors of clusters to plot pseudotime curves over Seurat clustering
+#' @param pal Color palette to apply for pseudotime
+#' @param exclude.curve Excludes slingshot curves from being used for pseudotime reconstruction. If all Slingshot curves are used use exclude.curve = NULL
+#' @param individual.curves If true, plots pseudotime along the individual pseudotime curves generated by the Slingshot algorithm
+#' @return Plots indicating average pseudotime and cluster identity overlaid with pseudotime curves generated by the Slingshot algorithm.
+ 
+plot.pseudotime.curves <- function(number.columns = 3,
+                                   slingshot.object = sds,
+                                   cell.colors = cell_colors_clust,
+                                   pal = colorRampPalette(c("blue", "red", "yellow"))(100),
+                                   exclude.curve = NULL,
+                                   individual.curves = FALSE) {
+  pt.mtx <- slingPseudotime(slingshot.object)
+ 
+  nms <- colnames(pt.mtx)
+ 
+  if (individual.curves == TRUE) {
+    number.rows <- ceiling((length(nms) + 2) / number.columns) ### we add 1 so that we can plot in addition the curves on top of the clustering
+ 
+    par(mfrow = c(number.rows, number.columns))
+ 
+    for (i in 1:length(nms)) {
+      colors <- pal[cut(pt.mtx[, i], breaks = 100)]
+      plot(reducedDim(slingshot.object), col = colors, pch = 16, cex = 0.5, main = nms[i])
+      if (nms[i] %in% exclude.curve) {
+        lines(sds, linInd = i, lty = 2, lwd = 3, col = "red")
+      } else {
+        lines(sds, linInd = i)
+      }
+    }
+  } else {
+    par(mfrow = c(1, 2))
+  }
+ 
+  if (is.null(exclude.curve)) {
+    print("No curve excluded!")
+    plot(reducedDim(slingshot.object), col = cell_colors_clust, pch = 16, cex = 0.5, main = "Seurat clusters")
+    lines(slingshot.object, lwd = 2, col = "black")
+ 
+    pt.mean <- apply(pt.mtx, 1, function(x) {
+      mean(x, na.rm = TRUE)
+    })
+    cell_colors_pt <- pal[cut(pt.mean, breaks = 100)]
+ 
+    plot(reducedDim(slingshot.object), col = cell_colors_pt, pch = 16, cex = 0.5, main = "Mean Pseudotime")
+    lines(slingshot.object, lwd = 2, col = "black")
+  } else {
+    print(paste0("Exclude curves: ", exclude.curve))
+ 
+    plot(reducedDim(slingshot.object), col = cell_colors_clust, pch = 16, cex = 0.5, main = "Seurat clusters")
+    lines(slingshot.object, linInd = which(nms %!in% exclude.curve), lwd = 2, col = "black")
+    lines(slingshot.object, linInd = which(nms %in% exclude.curve), lty = 2, lwd = 3, col = "red")
+ 
+    pt.mtx[, nms[which(nms %in% exclude.curve)]] <- NA
+ 
+    pt.mean <- apply(pt.mtx, 1, function(x) {
+      mean(x, na.rm = TRUE)
+    })
+    cell_colors_pt <- pal[cut(pt.mean, breaks = 100)]
+    cell_colors_pt[is.na(cell_colors_pt)] <- "#FF0000"
+    plot(reducedDim(slingshot.object), col = cell_colors_pt, pch = 16, cex = 0.5, main = "Mean Pseudotime")
+    lines(slingshot.object, linInd = which(nms %!in% exclude.curve), lwd = 2, col = "black")
+    lines(slingshot.object, linInd = which(nms %in% exclude.curve), lty = 2, lwd = 3, col = "red")
+  }
+}
+ 
+#' Plots gene expression and percentage of expressing cells in certain groups (logic of size and color coding of the dots is inverted relative to the DotPlot function in Seurat)
+#'
+#' @param input Seurat input dataset
+#' @param genes Genes that are supposed to be plotted
+#' @param time Seurat Ident by which data will be splitted to calculate mean gene expression and fraction of cells
+#' @param from.loom set TRUE if plotting data from La Manno et al loom datafile to get right ordering of timepoints
+#' @return A ggplot object with normalized mean gene expression (indicated by the size of the circles) and percentage of expressing cells (indicated from blue to yellow).
+ 
+plot.expression.dynamics.from.Seurat <- function(
+  input, 
+  genes, 
+  time, 
+  title, 
+  from.loom = FALSE,
+  colors = c("black", "orange", "darkred", "darkred", "steelblue", "steelblue", "limegreen", "limegreen"),
+  linetype = c("solid", "solid", "solid", "dashed", "solid", "dashed", "solid", "dashed")) {
+ 
+  num.cells.expressing <- do.call(cbind, lapply(genes, function(x) {
+   
+    exprs.values <- as.data.frame(GetAssayData(object = input, slot = 'counts'))[x, ] %>%
+      t() %>% as.data.frame() %>%
+      dplyr::mutate(age = input[[time]]) %>% 
+      dplyr::group_by(age)
+   
+    colnames(exprs.values)[1] <- "expression"
+   
+    exprs.values <- exprs.values %>%
+      dplyr::group_by(age) %>%
+      dplyr::summarise(count2 = length(expression[expression > 0]))
+   
+    return(exprs.values$count2)
+  }))
+ 
+  colnames(num.cells.expressing) <- genes
+ 
+  perc.expressing <-  as.data.frame(GetAssayData(object = input, slot = 'counts'))[genes, ] %>%
+    t() %>% as.data.frame() %>%
+    dplyr::mutate(age = input[[time]]) %>% 
+    dplyr::group_by(age) %>%
+    dplyr::count() %>%
+    dplyr::bind_cols(. ,as_tibble(num.cells.expressing)) %>% as.data.frame() %>%
+    dplyr::mutate_if(is.numeric, function(v){v / .[,"n"]}) %>%
+    dplyr::select(-n) %>%
+    tidyr::gather(key = gene, value = "percent", -age) %>%
+    dplyr::pull(percent)
+ 
+  ###normalization function
+  normalit<-function(x){
+    x/(max(x))
+  }
+ 
+  mat <- as.data.frame(GetAssayData(object = input, slot = 'counts'))[genes, ] %>%
+    t() %>% as.data.frame() %>%
+    dplyr::mutate(age = input[[time]][,time]) %>%
+    dplyr::group_by(age) %>%
+    dplyr::summarise_all(mean) %>%
+    dplyr::mutate_each(funs(normalit), all_of(genes)) %>%
+    as.data.frame() %>%
+    tidyr::gather(key = gene, value = "readcounts", -age) %>%
+    dplyr::mutate(percent = perc.expressing)
+ 
+  mat$gene <- factor(mat$gene, levels = genes)
+  
+  if(from.loom == TRUE) {
+    mat$age <- factor(mat$age, levels = intersect(timepoints, unique(input[[time]][,time])))
+  } else {
+    mat$age <- factor(mat$age, levels = unique(mat$age))
+  }
+  
+  gg <- ggplot(data = as.data.frame(lapply(mat, unlist)), aes(x = age, y = factor(gene))) +
+    geom_count(aes(size = readcounts, color = percent)) +
+    scale_size_area(max_size = 10) +
+    scale_color_gradientn(colours = c("blue", "yellow"), limits = c(0,1)) +
+    theme_classic() +
+    ggtitle(title) +
+    theme(axis.text.y = element_text(size = 24, face = 'italic'),
+          axis.title = element_blank(),
+          axis.text.x = element_text(size = 24, angle = 45, hjust = 1, vjust = 1),
+          legend.title = element_text(size = 20),
+          legend.title.align=0.5,
+          legend.text = element_text(size = 20),
+          strip.text = element_text(size = 24, face = "bold"),
+          plot.title = element_text(face = "bold", size = 24)) 
+  
+  gg2 <- ggplot(mat, aes(x = age, y = percent, group = gene)) +
+    geom_line(aes(color = gene, linetype = gene)) +
+    scale_color_manual(values = colors) +
+    scale_linetype_manual(values = linetype) +
+    theme_bw() +
+    ggtitle(" ") +
+    ylab("Ratio of expressing cells") +
+    theme(axis.text.y = element_text(size = 24),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = 20),
+          axis.text.x = element_text(size = 24, angle = 45, hjust = 1, vjust = 1),
+          legend.title = element_text(size = 20),
+          legend.title.align=0.5,
+          legend.text = element_text(size = 20, face = 'italic'),
+          strip.text = element_text(size = 24, face = "bold"),
+          plot.title = element_text(face = "bold", size = 24)) 
+
+  
+  return(cowplot::plot_grid(gg, gg2, nrow = 1))
+}
+
+
+"%!in%" <- function(x, y) !("%in%"(x, y))
+```
+
+## Connect loom file from La Manno et al. 2020. 
+
+```{r Load loom file, echo=TRUE, message=FALSE, warning=FALSE, results='hide', linewidth = 90}
+## connect sc.loom file downloaded from mousebrain.org
+sc.loom <- loomR::connect(
+  filename = paste0(dir, "/input/dev_all.loom"),
+  mode = "r+", skip.validate = TRUE
+)
+
+## Generate sc.meta file by extracting parameters from connected sc.loom file
+sc.meta <- data.frame(
+  sc.loom$col.attrs$Age[],
+  sc.loom$col.attrs$PseudoAge[],
+  sc.loom$col.attrs$Tissue[],
+  sc.loom$col.attrs$PseudoTissue[],
+  sc.loom$col.attrs$Class[],
+  sc.loom$col.attrs$Clusters[],
+  10000 / sc.loom$col.attrs$TotalUMI[],
+  sc.loom$col.attrs$CellID[],
+  sc.loom$col.attrs$SampleID[]
+)
+
+colnames(sc.meta) <- c(
+  "age", "pseudoage", "tissue", "pseudotissue", "class", "clusters",
+  "normalization_factor", "cellID", "sampleID"
+)
+```
+
+## Load the spinal cord scRNAseq data from Delile et al. 2019.
+
+```{r Load spinal cord data, echo=TRUE, message=FALSE, warning=FALSE, results='hide', linewidth = 90}
+
+eset <- readRDS(paste0(dir, "/input/m_neural.rds"))
+eset <- eset$expressionSet
+
+rownames(Biobase::pData(eset)) <- gsub("-", ".", rownames(Biobase::pData(eset)))
+colnames(Biobase::exprs(eset)) <- gsub("-", ".", colnames(Biobase::exprs(eset)))
+
+mat <- Biobase::exprs(eset)
+rownames(mat) <- Biobase::fData(eset)[, "external_gene_name"]
+
+pbmc <- CreateSeuratObject(
+  counts = mat,
+  meta.data = Biobase::pData(eset),
+  project = "MouseSpinalCordAtlas"
+)
+
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^mt-")
+
+pbmc <- pbmc %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  SCTransform(., vars.to.regress = "cells_samples") %>%
+  NormalizeData(verbose = FALSE, assay = "SCT") %>%
+  ScaleData(verbose = FALSE, assay = "SCT")
+```
+
+```{r Plot expression dynamics tTFs in spinal cord neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+sc <- plot.expression.dynamics.from.Seurat(
+  input = pbmc,
+  genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+  time = 'timepoint',
+  title = 'Spinal cord',
+  from.loom = FALSE,
+  colors = c("black", "orange", "darkred", "darkred", "steelblue", "steelblue", "limegreen", "limegreen"),
+  linetype = c("solid", "solid", "solid", "dashed", "solid", "dashed", "solid", "dashed"))
+
+sc
+
+```
+
+## Pseudotemporal gene expression analysis of V2b neurons
+
+Subset the data to V2b neurons and generate overview plots.
+
+```{r Pseudotemporal ordering of V2b neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 9, fig.height=6, fig.keep='all', linewidth = 90}
+
+### Pseudotemporal ordering of V2b neurons ----
+
+V2.neurons <- pbmc %>%
+  subset(subset = Type_step2 %in% c("V2b")) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(V2.neurons, reduction = "umap", group.by = "timepoint"),
+  DimPlot(V2.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(V2.neurons, features = c("Ascl1", "Gata2", "Gata3", "Onecut2")),
+  FeaturePlot(V2.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot 
+
+```{r Slingshot analysis of V2b neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(V2.neurons, "umap"),
+  clusterLabels = V2.neurons$seurat_clusters,
+  start.clus = 2, end.clus = c(1, 3), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(V2.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(pal = colorRampPalette(c('blue', 'red', 'yellow'))(100))
+```
+
+Plot pseudotime profiles of V2b neurons
+
+```{r Gene expression profiles of V2b neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime(
+  gene = c(
+    "Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = V2.neurons,
+  exclude.timepoint = c(9.5),
+  exclude.curve = NULL,
+  plot.title = "V2b neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in V2b neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = V2.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'timepoint',
+                                     title = 'V2b neurons')
+
+```
+
+## Pseudotemporal gene expression analysis of V2a neurons
+
+Subset data to V2a neurons and generate overview plots.
+
+```{r Pseudotemporal ordering of V2a neurons, message=FALSE, warning=FALSE, results='hide',fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+### Pseudotemporal ordering of V2b neurons ----
+
+V2.neurons <- pbmc %>%
+  subset(subset = Type_step2 %in% c("V2a")) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(V2.neurons, reduction = "umap", group.by = "timepoint"),
+  DimPlot(V2.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(V2.neurons, features = c("Ascl1", "Vsx1", "Vsx2", "Onecut2")),
+  FeaturePlot(V2.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot 
+
+```{r Slingshot analysis of V2a neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(V2.neurons, "umap"),
+  clusterLabels = V2.neurons$seurat_clusters,
+  start.clus = 1, end.clus = c(2, 3, 5), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(V2.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(pal = colorRampPalette(c('blue', 'red', 'yellow'))(100))
+```
+
+```{r Gene expression profiles of V2a neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime(
+  gene = c(
+    "Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = V2.neurons,
+  exclude.timepoint = c(9.5),
+  exclude.curve = NULL,
+  plot.title = "V2a neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in V2a neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = V2.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'timepoint',
+                                     title = 'V2a neurons')
+
+
+```
+
+## Pseudotemporal gene expression analysis of dI1 neurons
+
+Subset data to dI1 neurons.
+
+```{r Pseudotemporal ordering of dI1 neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+### Pseudotemporal ordering of V2b neurons ----
+
+V2.neurons <- pbmc %>%
+  subset(subset = Type_step2 %in% c("dl1")) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(V2.neurons, reduction = "umap", group.by = "timepoint"),
+  DimPlot(V2.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(V2.neurons, features = c("Atoh1", "Lhx2", "Lhx9", "Onecut2")),
+  FeaturePlot(V2.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot 
+
+```{r Slingshot analysis of dI1 neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(V2.neurons, "umap"),
+  clusterLabels = V2.neurons$seurat_clusters,
+  start.clus = 5, end.clus = c(0, 3), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(V2.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(pal = colorRampPalette(c('blue', 'red', 'yellow'))(100))
+```
+
+Plot pseudotime profiles of dI1 neurons
+
+```{r Gene expression profiles of dI1 neurons, echo=TRUE, fig.height=3, fig.keep='all', fig.width=6, message=FALSE, warning=FALSE, results=FALSE, linewidth = 90}
+
+plot.gene.in.pseudotime(
+  gene = c(
+    "Atoh1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = V2.neurons,
+  exclude.timepoint = c(9.5),
+  exclude.curve = NULL,
+  plot.title = "dI1 neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in dI1 neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = V2.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'timepoint',
+                                     title = 'dI1 neurons')
+
+
+```
+
+## Pseudotemporal gene expression analysis of dI5 neurons
+
+Subset data to dI5 neurons.
+
+```{r Pseudotemporal ordering of dI5 neurons, message=FALSE, warning=FALSE, results='hide',fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+### Pseudotemporal ordering of V2b neurons ----
+
+V2.neurons <- pbmc %>%
+  subset(subset = Type_step2 %in% c("dl5")) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(V2.neurons, reduction = "umap", group.by = "timepoint"),
+  DimPlot(V2.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(V2.neurons, features = c("Ascl1", "Lmx1b", "Tlx3", "Onecut2")),
+  FeaturePlot(V2.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot. We exclude curve4 because it bends back on itself. Cells without pseudotime coordinates are shown in red. 
+
+```{r Slingshot analysis of dI5 neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(V2.neurons, "umap"),
+  clusterLabels = V2.neurons$seurat_clusters,
+  start.clus = 5, end.clus = 8, stretch = 0
+)
+
+cell_colors_clust <- cell_pal(V2.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(pal = colorRampPalette(c('blue', 'red', 'yellow'))(100),
+                       exclude.curve = "curve4")
+```
+
+Plot pseudotime profiles of dI5 neurons
+
+```{r Gene expression profiles of dI5 neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime(
+  gene = c(
+    "Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = V2.neurons,
+  exclude.timepoint = c(9.5),
+  exclude.curve = "curve4",
+  plot.title = "dI5 neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in dI5 neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = V2.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'timepoint',
+                                     title = 'dI5 neurons')
+
+
+```
+
+
+```{r Remove spinal cord data, echo=FALSE, message=FALSE, warning=FALSE, results='hide', fig.keep='all'}
+
+remove(list = c("eset", "mat", "V2.neurons", "pbmc"))
+```
+
+### Load hindbrain scRNAseq data from La Manno et al. 2020
+
+We subset the data to annotated hindbrain neurons and convert the data in a Seurat object. To identify which clusters define which neuronal populations, we plot the data on a UMAP.
+
+```{r Load hindbrain data, echo=TRUE, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+tissue <- "Hindbrain"
+celltype <- "Neuron"
+timepoints <- c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0")
+
+tissue.id <- which(grepl(tissue, unique(sc.loom$col.attrs$Tissue[])) == TRUE)
+cell.id <- intersect(
+  which(sc.meta$tissue %in% unique(sc.loom$col.attrs$Tissue[])[tissue.id] & 
+        sc.meta$class == celltype),
+  which(sc.meta$age %in% timepoints)
+)
+
+exp.mat <- sc.loom[["matrix"]][cell.id, ]
+
+colnames(exp.mat) <- sc.loom$row.attrs$Gene[]
+rownames(exp.mat) <- sc.meta$cellID[cell.id]
+
+hb.seurat <- CreateSeuratObject(
+  counts = t(exp.mat),
+  meta.data = sc.meta[cell.id, ] %>%
+    as.tibble() %>%
+    tibble::column_to_rownames("cellID")
+)
+
+hb.seurat[["percent.mt"]] <- PercentageFeatureSet(hb.seurat, pattern = "^mt-")
+
+hb.seurat <- hb.seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  SCTransform(vars.to.regress = "sampleID") %>%
+  NormalizeData(verbose = FALSE) %>%
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(hb.seurat, reduction = "umap", group.by = "age"),
+  DimPlot(hb.seurat, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(hb.seurat, features = c("Slc17a6", "Gad2", "Tubb3", "Onecut2")),
+  FeaturePlot(hb.seurat, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(hb.seurat, features = c("Pax2", "Lhx5", "Lhx1", "Isl1")),
+  FeaturePlot(hb.seurat, features = c("Lhx2", "Lhx9", "Barhl1", "Lmx1b")),
+  nrow = 2
+)
+```
+
+```{r Plot expression dynamics tTFs in hindbrain neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+hb <- plot.expression.dynamics.from.Seurat(
+  input = hb.seurat,
+  genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+  time = 'age',
+  title = 'Hindbrain',
+  from.loom = TRUE,
+  colors = c("black", "orange", "darkred", "darkred", "steelblue", "steelblue", "limegreen", "limegreen"),
+  linetype = c("solid", "solid", "solid", "dashed", "solid", "dashed", "solid", "dashed"))
+
+hb
+
+```
+
+## Pseudotemporal gene expression analysis of Pax2 neurons
+
+```{r Pseudotemporal ordering of hindbrain Pax2 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.height=3, fig.width=3, linewidth = 90}
+
+cr.neurons <- hb.seurat %>%
+  subset(subset = seurat_clusters %in% c(2, 4, 19)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters")
+```
+
+We remove cluster 14 because it is not connected to the remaining clusters
+
+```{r Subsetting Pax2 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.width = 15, fig.height = 10, linewidth = 90}
+cr.neurons <- subset(cr.neurons, subset = seurat_clusters != 14)
+
+cowplot::plot_grid(DimPlot(cr.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(cr.neurons, features = c("Neurog1", "Neurog2", "Tubb3", "Gad2")),
+  FeaturePlot(cr.neurons, features = c("Lbx1", "En1", "Pax2", "Pax7")),
+  FeaturePlot(cr.neurons, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfib")),
+  FeaturePlot(cr.neurons, features = c("Neurod2", "Neurod6", "Evx1", "Gata3")),
+  nrow = 2
+)
+```
+
+This cluster encompasses multiple neuronal subtypes. We nevertheless perform pseudotemporal ordering using Slingshot. We exclude curve3 because it crosses other curves.
+
+```{r Slingshot analysis of hindbrain Pax2 neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(cr.neurons, "umap"),
+  clusterLabels = cr.neurons$seurat_clusters,
+  start.clus = 12, end.clus = c(1, 4, 7, 11), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(cr.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(exclude.curve = "curve3")
+```
+
+We exclude e9.0 because there are very few neurons for this timepoint.
+
+```{r Age distribution of hindbrain inhibitory neurons, echo=FALSE, fig.height=3, fig.width=6, message=FALSE, warning=FALSE, fig.keep='all', linewidth = 90}
+knitr::kable(t(table(cr.neurons$age)), caption = "Number of cells / timepoint")
+```
+
+```{r Gene expression profiles of hindbrain Pax2 neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c(
+    "Neurog2", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = cr.neurons,
+  exclude.timepoint = c("e9.0"),
+  exclude.curve = c("curve3"),
+  plot.title = "Hindbrain inhibitory neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in hindbrain inhibitory neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = cr.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'age',
+                                     title = 'Hindbrain inhibitory neurons',
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal gene expression analysis of hindbrain V1 neurons
+
+We further subset hindbrain inhibitory neurons to only include the lineage leading to En1-positive neurons. 
+
+```{r Pseudotemporal ordering of hindbrain V1 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.width=15, fig.height = 10, linewidth = 90}
+
+V1.neurons <- subset(cr.neurons, subset = seurat_clusters %in% c(1, 9, 12)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(V1.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(V1.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(V1.neurons, features = c("Neurog1", "Neurog2", "Tubb3", "Gad2")),
+  FeaturePlot(V1.neurons, features = c("Lbx1", "En1", "Pax2", "Pax7")),
+  FeaturePlot(V1.neurons, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfib")),
+  FeaturePlot(V1.neurons, features = c("Neurod2", "Neurod6", "Evx1", "Gata3")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot.
+
+```{r Slingshot analysis of hindbrain V1 neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(V1.neurons, "umap"),
+  clusterLabels = V1.neurons$seurat_clusters,
+  start.clus = 3, end.clus = c(0, 2), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(V1.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves()
+```
+
+We exclude e9.0, e13.5 and e14.0 because there are very few neurons for this timepoint. we exclude curve3 because it crosses other curves.
+
+```{r Age distribution in V1 neurons, echo=FALSE, fig.height=3, fig.width=6, message=FALSE, warning=FALSE,fig.keep='all'}
+knitr::kable(t(table(V1.neurons$age)), caption = "Number of cells / timepoint")
+```
+
+Plot pseudotime profiles of hindbrain V1 neurons
+
+```{r Gene expression profiles of hindbrain V1 neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c(
+    "Neurog2", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = V1.neurons,
+  exclude.timepoint = c("e9.0", "e13.5", "e14.0"),
+  exclude.curve = NULL,
+  plot.title = "Hindbrain inhibitory neurons (V1)"
+)
+```
+
+```{r Plot expression dynamics tTFs in hindbrain V1 neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = V1.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'age',
+                                     title = 'Hindbrain V1 neurons',
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal ordering of hindbrain dB4 neurons
+
+We next focus on the Lbx1/Pax2-positive branch and perform subclustering. These neurons express Neurog1 during neurogenesis and thus might correspond to dB4/dI6 neurons although only very few neurons express Dmrt3.
+
+```{r Pseudotemporal ordering of hindbrain dB4 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.height=10, fig.width=15, linewidth = 90}
+
+Lbx1.neurons <- subset(cr.neurons, subset = seurat_clusters %in% c(2, 4, 10)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 1)
+
+cowplot::plot_grid(DimPlot(Lbx1.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(Lbx1.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(Lbx1.neurons, features = c("Neurog1", "Neurog2", "Tubb3", "Gad2")),
+  FeaturePlot(Lbx1.neurons, features = c("Lbx1", "En1", "Pax2", "Pax3")),
+  FeaturePlot(Lbx1.neurons, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfib")),
+  FeaturePlot(Lbx1.neurons, features = c("Neurod2", "Neurod6", "Dmrt3", "Bhlhe22")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot.
+
+```{r Slingshot analysis of hindbrain dB4 neurons,results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(Lbx1.neurons, "umap"),
+  clusterLabels = Lbx1.neurons$seurat_clusters,
+  start.clus = 5, end.clus = c(8, 9), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(Lbx1.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves()
+```
+
+We exclude e10.0, e13.5 and e14.0 because there are very few neurons for this timepoint. 
+
+```{r Age distribution in dB4 neurons, echo=FALSE, fig.height=3, fig.width=6, message=FALSE, warning=FALSE,fig.keep='all', linewidth = 90}
+knitr::kable(t(table(Lbx1.neurons$age)), caption = "Number of cells / timepoint")
+```
+
+Plot pseudotime profiles of hindbrain dB4 neurons. 
+
+```{r Gene expression profiles of hindbrain dB4 neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c(
+    "Neurog1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+    ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = Lbx1.neurons,
+  exclude.timepoint = c("e10.0", "e13.5", "e14.0"),
+  exclude.curve = NULL,
+  plot.title = "Hindbrain dB4 neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in hindbrain dB4 neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = Lbx1.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'age',
+                                     title = 'Hindbrain dB4 neurons',
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal gene expression analysis of dA1 neurons (Lhx2+/Lhx9+)
+
+```{r Pseudotemporal ordering of hindbrain dA1 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.width=15, fig.height = 10, linewidth = 90}
+
+cr.neurons <- hb.seurat %>%
+  subset(subset = seurat_clusters %in% c(3, 11, 14)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(cr.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(cr.neurons, features = c("Atoh1", "Lhx2", "Lhx9", "Onecut2")),
+  FeaturePlot(cr.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(cr.neurons, features = c("Neurod2", "Neurod6", "Hoxb4", "Hoxb5")),
+  FeaturePlot(cr.neurons, features = c("Barhl1", "Barhl2", "Pax6", "Tubb3")),
+  nrow = 2
+)
+```
+
+We exclude clusters 5, 7 and 8 as these are Lhx2/9 negative. These neurons instead express Pax6 and Barhl1 and thus may be precerebellar neurons (Engelkamp et al., Development, 1999, Li et al., J Neurosci, 2004). Of note, they are also strongly positive for Nfia/b and Neurod2/6.
+
+```{r Subsetting dA1 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.width = 15, fig.height = 10, linewidth = 90}
+
+cr.neurons <- cr.neurons %>%
+  subset(subset = seurat_clusters %!in% c(5, 7, 8)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(cr.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(cr.neurons, features = c("Atoh1", "Lhx2", "Lhx9", "Onecut2")),
+  FeaturePlot(cr.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(cr.neurons, features = c("Neurod2", "Neurod6", "Hoxb4", "Hoxb5")),
+  FeaturePlot(cr.neurons, features = c("Shox2", "Tfap2d", "Otx2", "Sox7")),
+  nrow = 2
+)
+```
+
+These neurons can be subdivided on Hox-positive and Hox-negative neurons. We focus on the Hox-negative population for further analysis. We also exclude cluster 11 because these cells are Otx2, Shox2 and Tfap2d-positive and thus may be midbrain (Manno et al. Cell 2016). We also exclude cluster 9 because it expresses high levels of Sox7, which has previously been shown to be pro-apoptotic.
+
+```{r Subsetting Hox-negative dA1 neurons, message=FALSE, warning=FALSE, results='hide', fig.keep='all', fig.width = 15, fig.height = 10, linewidth = 90}
+
+dA1.neurons <- cr.neurons %>%
+  subset(subset = seurat_clusters %in% c(0, 1, 3, 7, 10)) %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(dA1.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(dA1.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(dA1.neurons, features = c("Atoh1", "Lhx2", "Lhx9", "Onecut2")),
+  FeaturePlot(dA1.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(dA1.neurons, features = c("Neurod2", "Neurod6", "Hoxb4", "Hoxb5")),
+  FeaturePlot(dA1.neurons, features = c("Shox2", "Tfap2d", "Otx2", "Sox7")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot.
+
+```{r Slingshot analysis of Hox-negative dA1 neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(dA1.neurons, "umap"),
+  clusterLabels = dA1.neurons$seurat_clusters,
+  start.clus = 0, end.clus = 6, stretch = 0
+)
+
+cell_colors_clust <- cell_pal(dA1.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves()
+```
+
+We exclude e9.0 and e14.0 because there are very few neurons for these timepoints.
+
+```{r Age distribution of dA1 neurons, echo=FALSE, fig.height=3, fig.width=6, message=FALSE, warning=FALSE,fig.keep='all'}
+knitr::kable(t(table(dA1.neurons$age)), caption = "Number of cells / timepoint")
+```
+
+Plot pseudotime profiles of hindbrain Hox-negative dA1 neurons. 
+
+```{r Gene expression profiles of hindbrain Hox-negative dA1 neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c(
+    "Atoh1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = dA1.neurons,
+  exclude.timepoint = c("e9.0", "e14.0"),
+  exclude.curve = NULL,
+  plot.title = "Hindbrain dA1 neurons (Hox-negative)"
+)
+```
+
+```{r Plot expression dynamics tTFs in hindbrain Hox-negative dA1 neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = dA1.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'age',
+                                     title = "Hindbrain dA1 neurons (Hox-negative)",
+                                     from.loom = TRUE)
+
+```
+
+```{r Remove hindbrain data, echo=FALSE, message=FALSE, warning=FALSE, results='hide', fig.keep='all', linewidth = 90}
+
+rm(list = c("exp.mat", "cr.neurons", "hb.seurat", "Lbx1.neurons", "V1.neurons", "dA1.neurons"))
+```
+
+### Load forebrain scRNAseq data from La Manno et al. 2020
+
+We subset the data to annotated forebrain neurons and convert the data in a Seurat object.
+
+```{r Subset data to forebrain neurons, echo=TRUE, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+### Generate Forebrain-specific Seurat object
+
+tissue <- "Forebrain"
+celltype <- "Neuron"
+timepoints <- c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0")
+
+tissue.id <- which(grepl(tissue, unique(sc.loom$col.attrs$Tissue[])) == TRUE)
+cell.id <- intersect(
+  which(sc.meta$tissue %in% unique(sc.loom$col.attrs$Tissue[])[tissue.id] & 
+        sc.meta$class == celltype),
+  which(sc.meta$age %in% timepoints)
+)
+
+exp.mat <- sc.loom[["matrix"]][cell.id, ]
+
+colnames(exp.mat) <- sc.loom$row.attrs$Gene[]
+rownames(exp.mat) <- sc.meta$cellID[cell.id]
+
+exc.seurat <- CreateSeuratObject(
+  counts = t(exp.mat),
+  meta.data = sc.meta[cell.id, ] %>%
+    as.tibble() %>%
+    tibble::column_to_rownames("cellID")
+)
+
+exc.seurat[["percent.mt"]] <- PercentageFeatureSet(exc.seurat, pattern = "^mt-")
+
+exc.seurat <- exc.seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  SCTransform(vars.to.regress = "sampleID") %>%
+  NormalizeData(verbose = FALSE, assay = "SCT") %>%
+  ScaleData(verbose = FALSE, assay = "SCT") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(exc.seurat, reduction = "umap", group.by = "age"),
+  DimPlot(exc.seurat, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(exc.seurat, features = c("Neurog2", "Ascl1", "Gad2", "Slc17a6")),
+  FeaturePlot(exc.seurat, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfia")),
+  FeaturePlot(exc.seurat, features = c("Nfib", "Neurod2", "Neurod6", "Reln")),
+  FeaturePlot(exc.seurat, features = c("Lhx6", "Meis2", "Foxg1", "Isl1")),
+  nrow = 2
+)
+```
+
+```{r Plot expression dynamics tTFs in forebrain neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+fb <- plot.expression.dynamics.from.Seurat(
+  input = exc.seurat,
+  genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+  time = 'age',
+  title = 'Forebrain',
+  from.loom = TRUE,
+  colors = c("black", "orange", "darkred", "darkred", "steelblue", "steelblue", "limegreen", "limegreen"),
+  linetype = c("solid", "solid", "solid", "dashed", "solid", "dashed", "solid", "dashed"))
+
+fb
+
+```
+
+## Pseudotemporal gene expression analysis of cortical excitatory neurons
+
+Subset data to excitatory neurons.
+
+```{r Pseudotemporal ordering of cortical excitatory neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+cr.neurons <- exc.seurat %>%
+  subset(subset = seurat_clusters %in% c(0, 1, 2)) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(cr.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(cr.neurons, features = c("Neurog2", "Tubb3", "Onecut2", "Zfhx3")),
+  FeaturePlot(cr.neurons, features = c("Zfhx4", "Nfia", "Nfib", "Neurod2")),
+  ncol = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot. We exclude curve3 because it folds back and crosses curve1. 
+
+```{r Slingshot analysis of forebrain excitatory neurons,results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(cr.neurons, "umap"),
+  clusterLabels = cr.neurons$seurat_clusters,
+  start.clus = 1, end.clus = c(2, 4, 7), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(cr.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(exclude.curve = "curve3")
+```
+
+Plot pseudotime profiles of cortical excitatory neurons
+
+```{r Gene expression profiles of forebrain excitatory neurons, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c(
+    "Neurog2", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Neurod2", "Neurod6"
+  ),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = cr.neurons,
+  exclude.timepoint = "e10.0",
+  exclude.curve = NULL,
+  plot.title = "Forebrain excitatory neurons"
+)
+```
+
+
+```{r Plot expression dynamics tTFs in forebrain excitatory neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = cr.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+                                     time = 'age',
+                                     title = "Forebrain excitatory neurons",
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal gene expression analysis of forebrain inhibitory neurons
+
+Subset data to inhibitory neurons.
+
+```{r Pseudotemporal ordering of forebrain inhibitory neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+cr.neurons <- exc.seurat %>%
+  subset(subset = seurat_clusters %in% c(3, 4, 5, 6, 8, 11)) %>%
+  NormalizeData(assay = "RNA") %>%
+  ScaleData(assay = "RNA") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(cr.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(cr.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(cr.neurons, features = c("Ascl1", "Gad2", "Tubb3", "Onecut2")),
+  FeaturePlot(cr.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(cr.neurons, features = c("Ebf1", "Meis2", "Lhx6", "Isl1")),
+  FeaturePlot(cr.neurons, features = c("Pax6", "Satb1", "Sox6", "Hmx3")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot. We exclude curve1 because its trajectory crosses multiple other trajectories. 
+
+```{r Slingshot analysis of cortical neurons, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height= 5, linewidth = 90}
+sds <- slingshot(Embeddings(cr.neurons, "umap"),
+  clusterLabels = cr.neurons$seurat_clusters,
+  start.clus = 0, end.clus = c(11, 1, 6, 5), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(cr.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves(exclude.curve = "curve1")
+```
+
+Plot pseudotime profiles of forebrain inhibitory neurons
+
+We do not plot Neurod2 and Neurod6 because forebrain inhibitory neurons do not express these markers. 
+
+```{r Gene expression profiles of forebrain inhibitory neurons, echo=TRUE, fig.height=7/3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c("Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib"),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = cr.neurons,
+  exclude.timepoint = "e9.0",
+  exclude.curve = c("curve1"),
+  plot.title = "Forebrain Inhibitory Neurons"
+)
+```
+
+```{r Plot expression dynamics tTFs in forebrain inhibitory neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = cr.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib'),
+                                     time = 'age',
+                                     title = "Forebrain inhibitory neurons",
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal gene expression analysis of MGE neurons
+
+We further partition the neurons into distinct neuronal subsets. We start by subsetting out the Lhx6-positive neurons, which probably correspond to MGE neurons.
+
+```{r Pseudotemporal ordering of MGE neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+Lhx6.neurons <- cr.neurons %>%
+  subset(subset = seurat_clusters %in% c(4, 5, 7, 9)) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(Lhx6.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(Lhx6.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(Lhx6.neurons, features = c("Ascl1", "Gad2", "Tubb3", "Onecut2")),
+  FeaturePlot(Lhx6.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(Lhx6.neurons, features = c("Ebf1", "Meis2", "Lhx6", "Sox6")),
+  FeaturePlot(Lhx6.neurons, features = c("Pax6", "Satb1", "Sox14", "Hmx3")),
+  nrow = 2
+)
+```
+
+We remove clusters 4 and 6 because they are Lhx6-negative.
+
+```{r Further subsetting of MGE neurons, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+Lhx6.neurons <- subset(Lhx6.neurons, subset = seurat_clusters %in% c(0, 1, 2, 3, 5)) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(Lhx6.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(Lhx6.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(Lhx6.neurons, features = c("Ascl1", "Gad2", "Tubb3", "Onecut2")),
+  FeaturePlot(Lhx6.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(Lhx6.neurons, features = c("Ebf1", "Meis2", "Lhx6", "Sox6")),
+  FeaturePlot(Lhx6.neurons, features = c("Pax6", "Satb1", "Sox14", "Hmx3")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot 
+
+```{r Slingshot analysis of MGE, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(Lhx6.neurons, "umap"),
+  clusterLabels = Lhx6.neurons$seurat_clusters,
+  start.clus = 4, end.clus = c(5, 2), stretch = 0
+)
+
+cell_colors_clust <- cell_pal(Lhx6.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves()
+```
+
+Plot pseudotime profiles of cortical excitatory neurons. We exclude e10.0 and e12.5 because there are only few neurons for these timepoints. 
+
+```{r Age distribution of MGE neurons, echo=FALSE, fig.height=3, fig.width=6, message=FALSE, warning=FALSE,fig.keep='all'}
+knitr::kable(t(table(Lhx6.neurons$age)), caption = "Number of cells / timepoint")
+```
+
+```{r Gene expression profiles of MGE, echo=TRUE, fig.height=3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c("Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib"),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = Lhx6.neurons,
+  exclude.timepoint = c("e10.0", "e12.5"),
+  exclude.curve = NULL,
+  plot.title = "Forebrain Inhibitory Neurons (Lhx6+)"
+)
+```
+
+```{r Plot expression dynamics tTFs in forebrain MGE neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = Lhx6.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib'),
+                                     time = 'age',
+                                     title = "Forebrain Inhibitory Neurons (Lhx6+)",
+                                     from.loom = TRUE)
+
+```
+
+## Pseudotemporal gene expression analysis of LGE neurons
+
+Subset data to Meis2/Isl1/Ebf1-positive neurons.
+
+```{r Pseudotemporal ordering of LGE neurons (Ebf1+), message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+
+LGE.neurons <- cr.neurons %>%
+  subset(subset = seurat_clusters %in% c(6, 3, 10)) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(LGE.neurons, reduction = "umap", group.by = "age"),
+  DimPlot(LGE.neurons, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(LGE.neurons, features = c("Ascl1", "Gad2", "Tubb3", "Onecut2")),
+  FeaturePlot(LGE.neurons, features = c("Zfhx3", "Zfhx4", "Nfia", "Nfib")),
+  FeaturePlot(LGE.neurons, features = c("Ebf1", "Meis2", "Lhx6", "Isl1")),
+  FeaturePlot(LGE.neurons, features = c("Pax6", "Satb1", "Sox14", "Hmx3")),
+  nrow = 2
+)
+```
+
+Pseudotemporal ordering using Slingshot 
+
+```{r Slingshot analysis of LGE neurons (Ebf1+), results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', fig.width= 10, fig.height=5, linewidth = 90}
+sds <- slingshot(Embeddings(LGE.neurons, "umap"),
+  clusterLabels = LGE.neurons$seurat_clusters,
+  start.clus = 5, end.clus = 0, stretch = 0
+)
+
+cell_colors_clust <- cell_pal(LGE.neurons$seurat_clusters, hue_pal())
+
+plot.pseudotime.curves()
+```
+
+Plot pseudotime profiles of LGE neurons (Ebf1+)
+
+```{r Gene expression profiles of LGE neurons (Ebf1+), echo=TRUE, fig.height=7/3, fig.width=6, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.gene.in.pseudotime.loom(
+  gene = c("Ascl1", "Tubb3", "Onecut2", "Zfhx3", "Zfhx4", "Nfia", "Nfib"),
+  pt.mtx = slingPseudotime(sds),
+  seurat.object = LGE.neurons,
+  exclude.timepoint = c("e9.0"), ## no or few neurons at e9
+  exclude.curve = NULL,
+  plot.title = "Forebrain Inhibitory Neurons (Meis2+; Isl1+; Ebf1+)"
+)
+```
+
+```{r Plot expression dynamics tTFs in forebrain LGE neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+plot.expression.dynamics.from.Seurat(input = LGE.neurons,
+                                     genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib'),
+                                     time = 'age',
+                                     title = "Forebrain Inhibitory Neurons (Meis2+; Isl1+; Ebf1+)",
+                                     from.loom = TRUE)
+
+```
+
+
+```{r Subset data to midbrain neurons, echo=TRUE, message=FALSE, warning=FALSE, results='hide', fig.width= 15, fig.height=10, fig.keep='all', linewidth = 90}
+### Generate Forebrain-specific Seurat object
+
+tissue <- "Midbrain"
+celltype <- "Neuron"
+timepoints <- c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0")
+
+tissue.id <- which(grepl(tissue, unique(sc.loom$col.attrs$Tissue[])) == TRUE)
+cell.id <- intersect(
+  which(sc.meta$tissue %in% unique(sc.loom$col.attrs$Tissue[])[tissue.id] & 
+        sc.meta$class == celltype),
+  which(sc.meta$age %in% timepoints)
+)
+
+exp.mat <- sc.loom[["matrix"]][cell.id, ]
+
+colnames(exp.mat) <- sc.loom$row.attrs$Gene[]
+rownames(exp.mat) <- sc.meta$cellID[cell.id]
+
+exc.seurat <- CreateSeuratObject(
+  counts = t(exp.mat),
+  meta.data = sc.meta[cell.id, ] %>%
+    as.tibble() %>%
+    tibble::column_to_rownames("cellID")
+)
+
+exc.seurat[["percent.mt"]] <- PercentageFeatureSet(exc.seurat, pattern = "^mt-")
+
+exc.seurat <- exc.seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  SCTransform(vars.to.regress = "sampleID") %>%
+  NormalizeData(verbose = FALSE, assay = "SCT") %>%
+  ScaleData(verbose = FALSE, assay = "SCT") %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+
+cowplot::plot_grid(DimPlot(exc.seurat, reduction = "umap", group.by = "age"),
+  DimPlot(exc.seurat, reduction = "umap", group.by = "seurat_clusters"),
+  FeaturePlot(exc.seurat, features = c("Neurog2", "Ascl1", "Gad2", "Slc17a6")),
+  FeaturePlot(exc.seurat, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfia")),
+  FeaturePlot(exc.seurat, features = c("Nfib", "Neurod2", "Neurod6", "Reln")),
+  FeaturePlot(exc.seurat, features = c("Lhx6", "Meis2", "Foxg1", "Isl1")),
+  nrow = 2
+)
+```
+
+```{r Plot expression dynamics tTFs in midbrain neurons, echo=TRUE, fig.height=5, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+mb <- plot.expression.dynamics.from.Seurat(
+  input = exc.seurat,
+  genes = c('Onecut2', 'Pou2f2', 'Zfhx3', 'Zfhx4', 'Nfia', 'Nfib', 'Neurod2', 'Neurod6'),
+  time = 'age',
+  title = 'Midbrain',
+  from.loom = TRUE,
+  colors = c("black", "orange", "darkred", "darkred", "steelblue", "steelblue", "limegreen", "limegreen"),
+  linetype = c("solid", "solid", "solid", "dashed", "solid", "dashed", "solid", "dashed"))
+
+mb
+
+```
+
+```{r Merge expression dynamics plots, echo=TRUE, fig.height=15, fig.width=12, results = FALSE, message=FALSE, warning=FALSE, fig.keep = 'all', linewidth = 90}
+
+cowplot::plot_grid(fb, mb, hb, ncol = 1)
+
+```

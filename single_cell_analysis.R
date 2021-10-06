@@ -306,7 +306,7 @@ graphics.off()
 # * Plot dynamics of temporal TFs in neural progenitors ----
 
 # we use the list of all genes that came out of the differential gene expression analysis
-plot.dynamics(genes = sort(age.TFs), title = "Figure_S5A.pdf", celltype = "Progenitor")
+plot.dynamics(genes = sort(age.TFs), title = "Figure_S12.pdf", celltype = "Progenitor")
 
 sink("sessionInfo.txt")
 print(sessionInfo())

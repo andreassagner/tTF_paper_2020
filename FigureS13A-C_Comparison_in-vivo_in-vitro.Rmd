@@ -1,0 +1,414 @@
+---
+title: "Comparison between in-vivo and in-vitro scRNAseq data"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+options(width = 70)
+knitr::opts_chunk$set(echo = TRUE, tidy = "styler", linewidth = 90)
+```
+
+## Load packages and data
+
+```{r Declare libraries and functions and load data, message=FALSE, warning=FALSE, include=TRUE}
+#################################################################
+## analysis of temporal genes in the in-vivo spinal cord data  ##
+#################################################################
+
+rm(list = ls()) ## clears environment
+
+## check if all necessary packages are installed, or install them if not
+dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+
+if (!dir.exists(paste0(dir, "output"))) {
+  dir.create(paste(dir, "output"))
+}
+
+setwd(dir = paste0(dir, "/output/"))
+
+packages <- c("Biobase", "dplyr", "plyr", "scater", "heatmap.plus", "Seurat", "dendextend", "tibble", "ggplot2", "heatmap.plus")
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())))
+}
+
+library(Biobase)
+library(plyr)
+library(ggplot2)
+library(scater)
+library(dplyr)
+library(Seurat)
+library(dendextend)
+library(tibble)
+library(pheatmap)
+
+## load 10X in-vivo data and list of TFs
+
+## list of mouse TFs downloaded from AnimalTFDB3.0 (http://bioinfo.life.hust.edu.cn/AnimalTFDB/#!/tf_summary?species=Mus_musculus)
+TF.lst <- read.delim(paste0(dir, "/input/Mus_musculus_TF.txt"), header = TRUE)$Symbol
+
+eset <- readRDS(paste0(dir, "/input/m_neural.rds"))
+eset <- eset$expressionSet
+
+rownames(Biobase::pData(eset)) <- gsub("-", ".", rownames(Biobase::pData(eset)))
+colnames(Biobase::exprs(eset)) <- gsub("-", ".", colnames(Biobase::exprs(eset)))
+
+## functions for converting ensemblIDs into real gene names and vice versa
+
+convert.to.ensemblID <- function(genes) {
+  return(unlist(lapply(genes, function(x) {
+    return(rownames(Biobase::fData(eset))[which(Biobase::fData(eset)[, "external_gene_name"] == x)])
+  })))
+}
+
+convert.to.realname <- function(ensemblIDs, eset) {
+  return(unlist(lapply(ensemblIDs, function(x) {
+    return(Biobase::fData(eset)$external_gene_name[which(rownames(Biobase::fData(eset)) == x)])
+  })))
+}
+
+## load data into the Seurat package
+mat <- Biobase::exprs(eset)
+rownames(mat) <- Biobase::fData(eset)[, "external_gene_name"]
+
+seurat <- CreateSeuratObject(
+  counts = mat,
+  meta.data = Biobase::pData(eset),
+  project = "MouseSpinalCordAtlas"
+)
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+
+seurat <- seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  NormalizeData(verbose = FALSE) %>%
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30)
+```
+
+## Differential gene expression in-vivo neural progenitors
+
+I perform differential gene expression test on progenitors from each DV domain (excluding dp6) from each embryonic day. Genes are counted as differentially expressed if they come back as differentially expressed for 8 out of the 10 analyzed progenitor domains.
+
+```{r DGE spinal cord progenitors, message=FALSE, warning=FALSE, include=TRUE}
+## analyze genes that are differentially expressed between progenitors from different days
+domains.p <- c("dp1", "dp2", "dp3", "dp4", "dp5", "p0", "p1", "p2", "pMN", "p3") ## define progenitor domains, we exclude dI6 due to low number of cells
+
+### runs subclustering on progenitor domains
+markers.age <- lapply(domains.p, function(x, threshold = 0.001) {
+  print(paste0("Subclustering domain ", x))
+
+  celllist <- rownames(Biobase::pData(eset))[which(Biobase::pData(eset)$Type_step2 == x)]
+
+  seurat.sub <- subset(seurat, cells = celllist) %>%
+    FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+    ScaleData(verbose = FALSE) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30)
+
+  Idents(seurat.sub) <- "timepoint"
+  age.markers <- FindAllMarkers(seurat.sub, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, base = exp(1))
+
+  return(age.markers)
+})
+
+### limit to to genes identified as differentially expressed in multiple domains
+
+num.domains <- 7 ### min 8 domains
+
+age.markers <- table(unlist(lapply(markers.age, function(x) {
+  return(unique(x[, "gene"]))
+}))) %>%
+  as.data.frame() %>%
+  dplyr::filter(Freq > num.domains) %>%
+  dplyr::arrange(desc(Freq))
+
+age.TFs <- intersect(age.markers$Var1, TF.lst)
+
+cat(paste0(length(age.markers$Var1), " genes detected!"))
+cat(paste0(length(age.TFs), " TFs detected!"))
+```
+
+This analysis identified 542 genes including 33 TFs as differentially expressed. I make a heatmap and perform hierarchical clustering on these 542 genes
+
+```{r z-scoring and hierarchical clustering in-vivo progenitors, message=TRUE, warning=FALSE, include=TRUE}
+## plot heatmap
+
+seurat.pt <- subset(seurat, subset = Type_step1 == "Progenitor")
+Idents(seurat.pt) <- "timepoint"
+
+## fit gene expression dynamics for heatmaps
+pt.mat <- as.matrix(GetAssayData(object = seurat.pt, slot = "counts"))
+colnames(pt.mat) <- gsub("-", ".", colnames(pt.mat))
+
+# log and recenter dataset
+pt.mat_log <- log(0.000001 + pt.mat)
+pt.mat_zscored <- t(scale(t(pt.mat_log), center = T, scale = T))
+
+## generate dataframe of in-vivo genes for plotting with ggplot
+pt.mat.TFs <- data.frame(pt.mat_zscored[as.character(age.markers$Var1), ]) %>%
+  tibble::rownames_to_column(var = "gene") %>%
+  as_tibble() %>%
+  tidyr::gather(key = "cellname", value = "readcount", -gene) %>%
+  dplyr::mutate("timepoint" = Biobase::pData(eset)[.$cellname, "timepoint"]) %>%
+  dplyr::group_by(gene, timepoint) %>%
+  dplyr::summarise(mean = mean(readcount)) %>%
+  dplyr::ungroup() %>%
+  tidyr::spread(gene, value = "mean") %>%
+  tibble::column_to_rownames("timepoint") %>%
+  t() %>%
+  as.matrix()
+
+## generate hierarchical clustering
+
+correlation_dist <- as.dist((1 - cor(t(pt.mat.TFs), method = "pearson")))
+hc <- stats::hclust(correlation_dist, method = "ward.D2")
+
+clusters <- cutree(hc, k = 2)
+table(clusters)
+```
+
+## Comparison with in-vitro RNAseq data from Rayon et al. 2020
+
+To identify correlated, uncorrelated and anti-correlated genes we compare the expression dynamics of the 542 genes identified from the in-vivo scRNAseq data D5-D9 RNAseq data from the in-vitro differentiations by Pearson correlation. 
+
+```{r Calculate Pearson correlation between in-vitro RNAseq and in-vivo scRNAseq data, message=TRUE, warning=FALSE, include=TRUE}
+
+mouse <- read.table(paste0(dir, "/input/GSE140748_expression_matrix.mouse.abundance.tsv"), sep = "\t", row.names = 1, header = TRUE)
+
+age.TFs.symbols.mouse <- fData(eset)$ensembl_gene_id[which(fData(eset)$current_gene_names %in% age.markers$Var1)]
+
+mouse.df <- mouse[age.TFs.symbols.mouse, ] %>%
+  t() %>%
+  data.frame() %>%
+  tibble::rownames_to_column(var = "sample_name") %>%
+  tidyr::separate(sample_name, sep = "_", c("species", "day", "repeat_number")) %>%
+  dplyr::filter(day %in% c(0, 1, 2, 3, 4, 5, 6, 7)) %>%
+  dplyr::select(-c(species, repeat_number)) %>%
+  dplyr::group_by(day) %>%
+  dplyr::summarise_each(funs(mean)) %>%
+  dplyr::mutate(day = as.character(day)) %>%
+  mutate_if(is.numeric, function(x) x + 1) %>%
+  mutate_if(is.numeric, function(x) log(x)) %>%
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames(var = "day") %>%
+  scale(., center = T, scale = T) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "day") %>%
+  tidyr::gather(key = "genename", value = "readcounts", -day) %>%
+  dplyr::mutate(genename = fData(eset)[genename, "current_gene_names"]) %>%
+  tidyr::spread(genename, readcounts) %>%
+  tibble::column_to_rownames(var = "day") %>%
+  as.matrix() %>%
+  t()
+
+mouse.df.sub <- mouse[age.TFs.symbols.mouse, ] %>%
+  t() %>%
+  data.frame() %>%
+  tibble::rownames_to_column(var = "sample_name") %>%
+  tidyr::separate(sample_name, sep = "_", c("species", "day", "repeat_number")) %>%
+  dplyr::filter(day %in% c(2, 3, 4, 5, 6)) %>%
+  dplyr::select(-c(species, repeat_number)) %>%
+  dplyr::group_by(day) %>%
+  dplyr::summarise_each(funs(mean)) %>%
+  dplyr::mutate(day = as.character(day)) %>%
+  mutate_if(is.numeric, function(x) x + 1) %>%
+  mutate_if(is.numeric, function(x) log(x)) %>%
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames(var = "day") %>%
+  scale(., center = T, scale = T) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "day") %>%
+  tidyr::gather(key = "genename", value = "readcounts", -day) %>%
+  dplyr::mutate(genename = fData(eset)[genename, "current_gene_names"]) %>%
+  tidyr::spread(genename, readcounts) %>%
+  tibble::column_to_rownames(var = "day") %>%
+  as.matrix() %>%
+  t()
+
+mouse.df <- mouse.df[, as.character(sort(as.numeric(colnames(mouse.df))))]
+
+order.mouse.genes <- intersect(rownames(pt.mat.TFs)[dendextend::order.hclust(hc)], rownames(mouse.df))
+
+### for correlation analysis
+common.names <- intersect(rownames(mouse.df.sub), rownames(pt.mat.TFs))
+
+matrix1 <- mouse.df.sub[common.names, ] ## in-vitro data D5-D9
+matrix2 <- pt.mat.TFs[common.names, ] ## in-vivo e9.5 - e13.5 progenitors
+
+### remove genes which are NA due to z-score scaling
+na.genes <- append(
+  rownames(matrix1)[which(is.na(matrix1[, 1] == TRUE))],
+  rownames(matrix2)[which(is.na(matrix2[, 1] == TRUE))]
+)
+
+## calculate Pearson correlation matrix between in-vitro and in-vivo
+cor.matrix <- cor(t(matrix1[!(rownames(matrix1) %in% na.genes), ]),
+  t(matrix2[!(rownames(matrix2) %in% na.genes), ]),
+  method = "pearson"
+)
+
+write.table(data.frame(sort(diag(cor.matrix))), "Table_S5.csv", sep=",", row.names = TRUE, col.names = FALSE)
+
+hist(diag(cor.matrix))
+
+correlated.genes <- names(diag(cor.matrix)[diag(cor.matrix) > .5])
+uncorrelated.genes <- names(diag(cor.matrix)[diag(cor.matrix) < .5 & diag(cor.matrix) > -.5])
+anticorrelated.genes <- names(diag(cor.matrix)[diag(cor.matrix) < -.5])
+
+
+cat(paste0(length(correlated.genes), " correlated genes!"), "\n")
+cat(paste0(length(uncorrelated.genes), " uncorrelated genes!"), "\n")
+cat(paste0(length(anticorrelated.genes), " anticorrelated genes!"), "\n")
+```
+
+## Plot data
+
+The data used for generating the figure in the manuscript has been saved as individual PDFs in the output folder. The image below is shown for aestethical reasons only.
+
+```{r Plot data, message=FALSE, warning=FALSE, include=TRUE, fig.width= 12, fig.height=18, fig.keep='last'}
+
+colnames(mouse.df) <- c("Day 3", "Day 4", "Day 5", "Day 6", "Day 7", "Day 8", "Day 9", "Day 10")
+
+plot.heatmaps.invivo.invitro <- function(genes,
+                                         invivo.matrix = pt.mat.TFs,
+                                         invitro.matrix = mouse.df,
+                                         title = "Correlated.genes") {
+  invivo.heatmap <- invivo.matrix[genes, ]
+  invitro.heatmap <- invitro.matrix[genes, ]
+
+  correlation_dist <- as.dist((1 - cor(t(invivo.heatmap), method = "pearson")))
+  hc <- stats::hclust(correlation_dist, method = "ward.D2")
+
+  clusters <- cutree(hc, k = 2)
+  table(clusters)
+
+  order.genes <- rownames(invivo.heatmap)[dendextend::order.hclust(hc)]
+
+  lab.row <- unlist(lapply(order.genes, function(x) {
+    if (x %in% TF.lst) {
+      print(x)
+      return(x)
+    } else {
+      return("")
+    }
+  }))
+
+  if (length(which(order.genes %in% TF.lst == TRUE)) < 10) {
+    cellheight <- 15
+  } else {
+    cellheight <- NA
+  }
+
+  hm1 <- pheatmap(invivo.heatmap[rev(order.genes), ],
+    color = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_rownames = F,
+    scale = "row",
+    legend = F
+  )
+
+  hm2 <- pheatmap(invivo.heatmap[rev(order.genes[order.genes %in% TF.lst]), ],
+    color = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_rownames = F,
+    scale = "row",
+    cellheight = cellheight,
+    legend = F
+  )
+
+  hm3 <- pheatmap(invitro.heatmap[rev(order.genes), ],
+    color = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_rownames = F,
+    scale = "row",
+    legend = F
+  )
+
+  hm4 <- pheatmap(invitro.heatmap[rev(order.genes[order.genes %in% TF.lst]), ],
+    color = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    show_rownames = F,
+    scale = "row",
+    cellheight = cellheight,
+    legend = F
+  )
+
+  return(cowplot::plot_grid(hm1$gtable, hm3$gtable, hm2$gtable, hm4$gtable,
+    nrow = 1,
+    align = "h", axis = "bt"
+  ))
+
+  pdf(paste0(title, "_invivo.pdf"), width = 4)
+  heatmap.plus::heatmap.plus(pt.mat.TFs[order.genes, ],
+    scale = "row",
+    Colv = NA,
+    Rowv = NA,
+    col = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    labCol = colnames(pt.mat.TFs),
+    labRow = lab.row,
+    ylab = paste0(title, " (", length(order.genes), " genes)"),
+    cexRow = .8
+  )
+  graphics.off()
+
+  pdf(paste0(title, "_invivo_TFs.pdf"), width = 4)
+  heatmap.plus::heatmap.plus(pt.mat.TFs[order.genes[order.genes %in% TF.lst], ],
+    scale = "row",
+    Colv = NA,
+    Rowv = NA,
+    col = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    labCol = colnames(pt.mat.TFs),
+    labRow = order.genes[order.genes %in% TF.lst],
+    ylab = paste0(title, " (", length(order.genes[order.genes %in% TF.lst]), " TFs)"),
+    cexRow = .8
+  )
+  graphics.off()
+
+  pdf(paste0(title, "_invitro.pdf"), width = 4)
+  heatmap.plus::heatmap.plus(mouse.df[order.genes, ],
+    scale = "row",
+    Colv = NA,
+    Rowv = NA,
+    col = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    labCol = colnames(mouse.df),
+    labRow = lab.row,
+    cexRow = .8
+  )
+  graphics.off()
+
+  pdf(paste0(title, "_invitro_TFs.pdf"), width = 4)
+  heatmap.plus::heatmap.plus(mouse.df[order.genes[order.genes %in% TF.lst], ],
+    scale = "row",
+    Colv = NA,
+    Rowv = NA,
+    col = colorRampPalette(c("#191d73", "white", "#ed7901"))(n = 1000),
+    labCol = colnames(mouse.df),
+    labRow = order.genes[order.genes %in% TF.lst],
+    cexRow = .8
+  )
+  graphics.off()
+}
+
+cowplot::plot_grid(
+  plot.heatmaps.invivo.invitro(genes = correlated.genes, title = "Correlated.genes"),
+  plot.heatmaps.invivo.invitro(genes = uncorrelated.genes, title = "Uncorrelated.genes"),
+  plot.heatmaps.invivo.invitro(genes = anticorrelated.genes, title = "Anticorrelated.genes"),
+  ncol = 1
+)
+```
+
+## Plot sessionInfo
+
+```{r Plot sessionInfo, message=FALSE, warning=FALSE, include=TRUE}
+
+sessionInfo()
+
+```

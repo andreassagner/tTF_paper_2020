@@ -1,0 +1,420 @@
+---
+title: "FigureS4_tTF_expression_correlation" 
+subtitle: "tTF expression and correlation rank plots at different axial identities of the nervous system"
+output:
+  pdf_document: 
+    dev: png
+  html_document: default
+---
+
+```{r wrap-hook, include = FALSE}
+library(knitr)
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x <- knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x <- strwrap(x, width = n)
+    x <- paste(x, collapse = "\n")
+  }
+  hook_output(x, options)
+})
+```
+
+```{r setup, include=FALSE}
+options(width = 70)
+
+knitr::opts_chunk$set(echo = TRUE, tidy = "styler", linewidth = 90)
+```
+
+This documents details the steps for the generation of Figure S4 in Sagner et al. 2021.
+
+```{r Declare libraries and functions, message=FALSE, warning=FALSE, include=FALSE}
+## Declare libraries ----
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+
+setwd(paste0(dir, "/output/"))
+
+library(Biobase)
+library(slingshot)
+library(Seurat)
+library(dplyr)
+library(scales)
+library(loomR)
+library(ggplot2)
+library(tibble)
+library(viridis)
+library(scales)
+library(scater)
+library(pbapply)
+library(plyr)
+
+
+plot.correlation.mtx <- function(correlation.mtx = corr.mtx.sc,
+                                 correlation.genes = c(
+                                   "Onecut1", "Onecut2", "Onecut3", "Pou2f2", "Zfhx2", "Zfhx3",
+                                   "Zfhx4", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+                                 ),
+                                 min = -0.6,
+                                 max = 0.6) {
+  correlation.mtx <- correlation.mtx[correlation.genes, correlation.genes]
+  diag(correlation.mtx) <- NA
+
+  reorder_cormat <- function(cormat) {
+    # Use correlation between variables as distance
+    dd <- as.dist((1 - cormat) / 2)
+    hc <- hclust(dd)
+    return(cormat[hc$order, hc$order])
+  }
+
+  correlation.mtx <- correlation.mtx %>%
+    reorder_cormat() %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    tidyr::gather(key = "gene2", value = "correlation", -gene)
+
+  correlation.mtx$gene <- factor(correlation.mtx$gene, levels = unique(correlation.mtx$gene))
+  correlation.mtx$gene2 <- factor(correlation.mtx$gene2, levels = unique(correlation.mtx$gene2))
+
+  correlation.plot <- ggplot(data = correlation.mtx, aes(x = gene, y = gene2, fill = correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(high = "red", mid = "white", low = "blue", limits = c(min, max), na.value = "grey50") +
+    theme_bw() +
+    labs(fill = "") +
+    theme(
+      axis.title = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1),
+      axis.text = element_text(face = "italic"),
+      panel.grid.major = element_blank(),
+      legend.position = "top",
+      aspect.ratio = 1
+    )
+
+  return(correlation.plot)
+}
+
+
+library(ggrepel)
+
+plot.correlation.ranks <- function(correlation.mtx = corr.mtx.mb,
+                                   plot.gene = "Zfhx3",
+                                   correlation.genes = c("Onecut1", "Onecut2", "Onecut3", "Pou2f2", "Zfhx2", "Zfhx3", "Zfhx4", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"),
+                                   min = -0.6,
+                                   max = 0.6) {
+  gene.ordered.correlations <- data.frame(sort(correlation.mtx[plot.gene, ])) %>%
+    tibble::rownames_to_column("gene") %>%
+    dplyr::filter(gene != plot.gene)
+
+  colnames(gene.ordered.correlations) <- c("gene", "correlation")
+  gene.ordered.correlations$gene <- factor(gene.ordered.correlations$gene, levels = gene.ordered.correlations$gene)
+
+  index <- unlist(lapply(correlation.genes[-which(correlation.genes == plot.gene)], function(x) {
+    which(gene.ordered.correlations$gene == x)
+  }))
+
+  gene.ordered.correlations$label <- NA
+  gene.ordered.correlations$label[index] <- as.character(gene.ordered.correlations$gene[index])
+
+  rank.plot <- ggplot(gene.ordered.correlations, aes(x = gene, y = correlation, label = label)) +
+    geom_point(
+      color = ifelse(is.na(gene.ordered.correlations$label), "grey70", "red"),
+      size = ifelse(is.na(gene.ordered.correlations$label), 1, 3)
+    ) +
+    geom_text_repel(min.segment.length = 0, seed = 42, max.overlaps = Inf, box.padding = 1, fontface = "italic") +
+    scale_x_discrete(expand = c(0.05, 0)) +
+    theme_bw() +
+    xlab("Gene Rank") +
+    ylab("Spearman Correlation") +
+    ylim(c(min, max)) +
+    ggtitle(plot.gene) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+
+  return(rank.plot)
+}
+
+plot.brain.region2 <- function(tissue = "Forebrain",
+                               celltype = "Neuron",
+                               timepoints = c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0"),
+                               umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+                               correlation.mtx = corr.mtx.fb,
+                               correlation.genes = c("Nfib", "Zfhx3"),
+                               min = -0.8,
+                               max = 0.8,
+                               labels = c("A", "B", "C", "D", "E")) {
+  tissue.id <- which(grepl(tissue, unique(sc.loom$col.attrs$Tissue[])) == TRUE)
+  cell.id <- intersect(
+    which(sc.meta$tissue %in% unique(sc.loom$col.attrs$Tissue[])[tissue.id] & sc.meta$class == celltype),
+    which(sc.meta$age %in% timepoints)
+  )
+
+  exp.mat <- sc.loom[["matrix"]][cell.id, ]
+
+  colnames(exp.mat) <- sc.loom$row.attrs$Gene[]
+  rownames(exp.mat) <- sc.meta$cellID[cell.id]
+
+  exc.seurat <- CreateSeuratObject(
+    counts = t(exp.mat),
+    meta.data = sc.meta[cell.id, ] %>%
+      as.tibble() %>%
+      tibble::column_to_rownames("cellID")
+  )
+
+  exc.seurat[["percent.mt"]] <- PercentageFeatureSet(exc.seurat, pattern = "^mt-")
+
+  exc.seurat <- exc.seurat %>%
+    subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+    NormalizeData(verbose = FALSE) %>%
+    ScaleData(verbose = FALSE) %>%
+    FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30, umap.method = "uwot")
+
+  exc.seurat$age <- factor(exc.seurat$age, levels = timepoints)
+
+  file1 <- DimPlot(exc.seurat, reduction = "umap", group.by = "age", label = FALSE, repel = TRUE)
+  file2 <- FeaturePlot(exc.seurat, features = umap.genes, ncol = 2) & NoAxes() & NoLegend() & theme(plot.title = element_text(face = "italic"))
+
+  file3 <- plot.correlation.mtx(
+    correlation.mtx = correlation.mtx,
+    correlation.genes = c(
+      "Onecut1", "Onecut2", "Onecut3", "Pou2f2", "Zfhx2", "Zfhx3",
+      "Zfhx4", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+    ),
+    min = min,
+    max = max
+  )
+
+  file4 <- cowplot::plot_grid(plot.correlation.ranks(
+    correlation.mtx = correlation.mtx,
+    plot.gene = correlation.genes[1],
+    min = min,
+    max = max
+  ),
+  plot.correlation.ranks(
+    correlation.mtx = correlation.mtx,
+    plot.gene = correlation.genes[2],
+    min = min,
+    max = max
+  ),
+  ncol = 1
+  )
+
+  cowplot::plot_grid(file1, file2, file3, file4, rel_heights = c(1, 2, 1, 1), ncol = 1)
+}
+
+plot.spinal.cord2 <- function(seurat.object = seurat,
+                              celltype = "Neuron",
+                              timepoints = c("e9.5", "e10.5", "e11.5", "e12.5", "e13.5"),
+                              umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+                              correlation.mtx = corr.mtx.sc,
+                              correlation.genes = c("Zfhx3", "Nfib"),
+                              min = -0.6,
+                              max = 0.6,
+                              labels = c("A", "B", "C", "D", "E")) {
+  sub.seurat <- seurat.object %>%
+    subset(subset = Type_step1 == "Neuron") %>%
+    FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30)
+
+  sub.seurat$timepoint <- factor(paste("e", as.character(sub.seurat$timepoint), sep = ""), levels = timepoints)
+
+  file1 <- DimPlot(sub.seurat, reduction = "umap", group.by = "timepoint", label = FALSE, repel = TRUE)
+  file2 <- FeaturePlot(sub.seurat, features = umap.genes, ncol = 2) & NoAxes() & NoLegend() & theme(plot.title = element_text(face = "italic"))
+
+  file3 <- plot.correlation.mtx(
+    correlation.mtx = correlation.mtx,
+    correlation.genes = c(
+      "Onecut1", "Onecut2", "Onecut3", "Pou2f2", "Zfhx2", "Zfhx3",
+      "Zfhx4", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+    ),
+    min = min,
+    max = max
+  )
+
+  file4 <- cowplot::plot_grid(plot.correlation.ranks(
+    correlation.mtx = correlation.mtx,
+    plot.gene = correlation.genes[1],
+    min = min,
+    max = max
+  ),
+  plot.correlation.ranks(
+    correlation.mtx = correlation.mtx,
+    plot.gene = correlation.genes[2],
+    min = min,
+    max = max
+  ),
+  ncol = 1
+  )
+
+  cowplot::plot_grid(file1, file2, file3, file4, rel_heights = c(1, 2, 1, 1), ncol = 1)
+}
+```
+
+```{r Connect loom file from La Manno et al. 2021}
+## connect sc.loom file downloaded from mousebrain.org
+sc.loom <- connect(filename = paste0(dir, "/input/dev_all.loom"), mode = "r+", skip.validate = TRUE)
+
+## Generate sc.meta file by extracting parameters from connected sc.loom file
+sc.meta <- data.frame(
+  sc.loom$col.attrs$Age[],
+  sc.loom$col.attrs$PseudoAge[],
+  sc.loom$col.attrs$Tissue[],
+  sc.loom$col.attrs$PseudoTissue[],
+  sc.loom$col.attrs$Class[],
+  sc.loom$col.attrs$Clusters[],
+  10000 / sc.loom$col.attrs$TotalUMI[],
+  sc.loom$col.attrs$CellID[]
+)
+
+colnames(sc.meta) <- c("age", "pseudoage", "tissue", "pseudotissue", "class", "clusters", "normalization_factor", "cellID")
+```
+
+```{r Run correlation analysis forebrain, fig.keep='all', fig.width = 5.5, fig.height = 22.5, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+setwd(paste0(dir, "/output/"))
+
+corr.mtx.fb <- readRDS("Correlation_matrix_forebrain_neurons.rds")
+
+fb.umaps <- plot.brain.region2(
+  tissue = "Forebrain",
+  celltype = "Neuron",
+  timepoints = c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0"),
+  umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+  correlation.mtx = corr.mtx.fb,
+  correlation.genes = c("Zfhx3", "Nfib"),
+  min = -1,
+  max = 1,
+  labels = c("A", "E", "I", "M")
+)
+
+fb.umaps
+
+remove(corr.mtx.fb)
+```
+
+```{r Run correlation analysese midbrain, fig.keep='all', fig.width = 5.5, fig.height = 22.5, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+setwd(paste0(dir, "/output/"))
+
+corr.mtx.mb <- readRDS("Correlation_matrix_midbrain_neurons.rds")
+
+mb.umaps <- plot.brain.region2(
+  tissue = "Midbrain",
+  celltype = "Neuron",
+  timepoints = c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0"),
+  umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+  correlation.mtx = corr.mtx.mb,
+  min = -0.6,
+  max = 0.6,
+  correlation.genes = c("Zfhx3", "Nfib"),
+  labels = c("B", "F", "J", "N")
+)
+
+mb.umaps
+remove(corr.mtx.mb)
+```
+
+```{r Run correlation analysese hindbrain, fig.keep='all', fig.width = 5.5, fig.height = 22.5, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}    
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+setwd(paste0(dir, "/output/"))
+
+corr.mtx.hb <- readRDS("Correlation_matrix_hindbrain_neurons.rds")
+
+hb.umaps <- plot.brain.region2(
+  tissue = "Hindbrain",
+  celltype = "Neuron",
+  timepoints = c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0"),
+  umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+  correlation.mtx = corr.mtx.hb,
+  min = -0.6,
+  max = 0.6,
+  correlation.genes = c("Zfhx3", "Nfib"),
+  labels = c("C", "G", "K", "O")
+)
+
+hb.umaps
+remove(corr.mtx.hb)
+```
+
+```{r Run correlation analysese spinal cord, fig.keep='all', fig.width = 5.5, fig.height = 22.5, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}    
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+setwd(paste0(dir, "/output/"))
+
+corr.mtx.sc <- readRDS("Correlation_matrix_spinal_cord_neurons.rds")
+
+## Load spinal cord scRNAseq data
+eset <- readRDS(paste0(dir, "/input/m_neural.rds"))
+eset <- eset$expressionSet
+
+rownames(Biobase::pData(eset)) <- gsub("-", ".", rownames(Biobase::pData(eset)))
+colnames(Biobase::exprs(eset)) <- gsub("-", ".", colnames(Biobase::exprs(eset)))
+
+## functions for converting ensemblIDs into real gene names and vice versa
+
+convert.to.ensemblID <- function(genes) {
+  return(unlist(lapply(genes, function(x) {
+    return(rownames(Biobase::fData(eset))[which(Biobase::fData(eset)[, "external_gene_name"] == x)])
+  })))
+}
+
+convert.to.realname <- function(ensemblIDs, eset) {
+  return(unlist(lapply(ensemblIDs, function(x) {
+    return(Biobase::fData(eset)$external_gene_name[which(rownames(Biobase::fData(eset)) == x)])
+  })))
+}
+
+## load data into the Seurat package
+mat <- Biobase::exprs(eset)
+rownames(mat) <- Biobase::fData(eset)[, "external_gene_name"]
+
+seurat <- CreateSeuratObject(counts = mat, meta.data = Biobase::pData(eset), project = "MouseSpinalCordAtlas")
+
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+
+seurat <- seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  NormalizeData(verbose = FALSE) %>%
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30)
+
+sc.umaps <- plot.spinal.cord2(
+  seurat.object = seurat,
+  celltype = "Neuron",
+  timepoints = c("e9.5", "e10.5", "e11.5", "e12.5", "e13.5"),
+  umap.genes = c("Slc17a6", "Gad2", "Onecut2", "Pou2f2", "Zfhx3", "Nfia", "Nfib", "Neurod2"),
+  correlation.mtx = corr.mtx.sc,
+  min = -0.6,
+  max = 0.6,
+  correlation.genes = c("Zfhx3", "Nfib"),
+  labels = c("D", "H", "L", "P")
+)
+
+sc.umaps
+
+remove(corr.mtx.sc)
+```
+
+```{r Merge plots, fig.keep='all', fig.width=22, fig.height= 22.5}   
+
+cowplot::plot_grid(fb.umaps, mb.umaps, hb.umaps, sc.umaps, ncol = 4)
+```
+
+## Plot sessionInfo
+
+```{r Plot sessionInfo}
+
+sessionInfo()
+```

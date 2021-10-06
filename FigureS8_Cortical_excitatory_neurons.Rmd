@@ -1,0 +1,589 @@
+---
+title: "FigureS8_Cortical excitatory neurons"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+options(width = 70)
+knitr::opts_chunk$set(echo = TRUE, tidy = "styler", linewidth = 90)
+```
+
+```{r Declare libraries and functions and load data, message=FALSE, warning=FALSE, include=FALSE}
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(pbapply)
+library(gridExtra)
+library(cowplot)
+library(scales)
+library(ggrepel)
+
+TF.lst <- read.delim(paste0(dir, "/input/Mus_musculus_TF.txt"), header = TRUE)$Symbol
+
+#' Generates a barplot indicating the n best and worst correlated genes by Spearman correlation
+#'
+#' @param gene Gene for which Spearman correlation will be plotted
+#' @param input input dataset, can be a Seurat object or precomputed correlation matrix
+#' @param input.type Input type of input datasets. Arguments can be 'correlation.mtx' or 'Seurat'
+#' @param number number of best and worst correlated genes to be returned
+#' @param color1 Color for best correlated genes
+#' @param color2 Color for worst correlated genes
+#' @param only.TF only.TF = FALSE plots all genes, only.TF = TRUE plots only TFs (this requires a vector of TFs called TF.lst)
+#' @param highlight.gene name of the gene, which is supposed to be highlighted on the plot
+#' @param highlight.color color with which the name or the color of highlight.gene are supposed to be indicated
+#' @return A ggplot barplot. Bars indicate the Spearman correlation values for the indicated genes with the chosen gene. The chosen gene is automatically removed from the plot.
+
+plot.corr <- function(gene,
+                      input = seurat,
+                      input.type = c("correlation.mtx", "Seurat"),
+                      number = 20, color1 = "blue",
+                      color2 = "orange", only.TF = FALSE,
+                      highlight.gene = "Neurod2",
+                      highlight.color = "red") {
+  if (input.type == "correlation.mtx") {
+    dataframe <- input
+  } else if (input.type == "Seurat") {
+    data.mtx <- as.matrix(GetAssayData(input))
+
+    cat("Calculate correlation ranks!")
+    gene.ordered.correlations <- cbind(
+      rownames(data.mtx),
+      unlist(pblapply(rownames(input), function(genename) {
+        return(cor(x = data.mtx[gene, ], y = data.mtx[genename, ], method = "spearman"))
+      }))
+    )
+
+    colnames(gene.ordered.correlations) <- c("gene", "correlation")
+
+    gene.ordered.correlations <- data.frame(gene.ordered.correlations) %>%
+      dplyr::filter(!is.na(correlation)) %>%
+      dplyr::mutate(correlation = as.numeric(correlation))
+
+    colnames(gene.ordered.correlations) <- c("genenames", gene)
+
+    rownames(gene.ordered.correlations) <- gene.ordered.correlations$genenames
+
+    dataframe <- t(gene.ordered.correlations)
+  } else {
+    print("input.type must be defined as Seurat or correlation.mtx")
+  }
+
+  selected.row <- as.data.frame(dataframe[gene, ])
+  rownames(selected.row) <- make.names(colnames(dataframe), unique = TRUE)
+  selected.row[, 2] <- row.names(selected.row)
+  selected.row <- selected.row[!is.na(selected.row[, 1]), ]
+
+  if (only.TF == TRUE) {
+    selected.row <- selected.row[intersect(rownames(selected.row), TF.lst), ]
+  }
+
+  colnames(selected.row) <- c("correlation", "gene_names")
+  selected.row$correlation <- as.numeric(selected.row$correlation)
+
+  selected.row <- selected.row %>%
+    dplyr::arrange(desc(correlation)) ## order elements
+
+  n <- number + 1
+  corr.genes <- rbind(
+    selected.row[2:n, ],
+    tail(selected.row, n = number)
+  )
+
+  if (max(corr.genes$correlation) > 0.6) {
+    max.axis <- 1
+  } else {
+    max.axis <- 0.6
+  }
+
+  for (j in 1:nrow(corr.genes)) {
+    if (as.numeric(corr.genes[j, "correlation"]) > 0) {
+      corr.genes[j, "position"] <- -0.02
+      corr.genes[j, "hjust"] <- 1
+      corr.genes[j, "color"] <- color1
+    }
+    else {
+      corr.genes[j, "position"] <- 0.02
+      corr.genes[j, "hjust"] <- 0
+      corr.genes[j, "color"] <- color2
+    }
+  }
+
+  if (highlight.gene %in% rownames(corr.genes)) {
+    corr.genes[highlight.gene, "color"] <- highlight.color
+  } else {
+    print("highlight.gene not in dataframe !!!")
+  }
+
+  textsize <- 240 / number
+
+  bar.plot <- ggplot(data = corr.genes) +
+    geom_bar(
+      stat = "identity", aes(
+        x = reorder(row.names(corr.genes), -corr.genes[, 1]),
+        y = corr.genes[, 1],
+        fill = corr.genes[, 5]
+      ),
+      position = "dodge"
+    ) +
+    scale_fill_manual(values = c(color1, color2, highlight.color)) +
+    geom_text(aes(
+      x = reorder(row.names(corr.genes), -corr.genes[, 1]),
+      y = corr.genes[, 3],
+      label = row.names(corr.genes),
+      angle = 90,
+      hjust = corr.genes[, 4],
+      size = 60,
+      color = color,
+      fontface = "bold"
+    )) +
+    scale_color_manual(values = c(color1, color2, highlight.color)) +
+    ggtitle(gene) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.text.y = element_text(size = 16),
+      axis.title.y = element_text(size = 12),
+      legend.title = element_blank(),
+      legend.position = "none",
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      panel.grid.minor.y = element_line(size = 0.1, colour = "black"),
+      panel.grid.major.y = element_line(size = 0.2, colour = "black"),
+      plot.title = element_text(face = "bold", size = 32)
+    ) +
+    ylab("Spearman correlation") +
+    scale_y_continuous(breaks = pretty_breaks(6), limits = c(-max.axis, max.axis))
+  return(bar.plot) ### returns to outputs bar.plot <- ggplot object, gene.list <- correlations of all genes
+}
+
+#' Generates a hierarchical clustered correlation matrix
+#'
+#' @param input input dataset, can be a Seurat object or precomputed correlation matrix
+#' @param input.type Input type of input datasets. Arguments can be 'correlation.mtx' or 'Seurat'
+#' @param correlation.genes Vector of genes that will be used to compute the correlation matrix
+#' @param min Minimum correlation values to be plotted. Smaller correlations will be shown as grey
+#' @param max Maximum correlation values to be plotted. Bigger correlations will be shown as grey
+#' @return A ggplot object. The color code indicates Spearman correlation values between the genes
+
+plot.correlation.mtx <- function(input = seurat,
+                                 input.type = c("Seurat", "correlation.mtx"),
+                                 correlation.genes = c(
+                                   "Onecut1", "Onecut2", "Onecut3", "Pou2f2", "Zfhx2", "Zfhx3",
+                                   "Zfhx4", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+                                 ),
+                                 min = -0.6,
+                                 max = 0.6) {
+  reorder_cormat <- function(cormat) {
+    # Use correlation between variables as distance
+    dd <- as.dist((1 - cormat) / 2)
+    hc <- hclust(dd)
+    return(cormat[hc$order, hc$order])
+  }
+
+  if (input.type == "correlation.mtx") {
+    correlation.mtx <- input[correlation.genes, correlation.genes]
+  } else if (input.type == "Seurat") {
+    correlation.mtx <- cor(t(as.matrix(GetAssayData(input))[correlation.genes, ]), method = "spearman")
+  } else {
+    print("input.type must be defined as Seurat or correlation.mtx")
+  }
+
+  diag(correlation.mtx) <- NA
+
+  correlation.mtx <- correlation.mtx %>%
+    reorder_cormat() %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    tidyr::gather(key = "gene2", value = "correlation", -gene)
+
+  correlation.mtx$gene <- factor(correlation.mtx$gene, levels = unique(correlation.mtx$gene))
+  correlation.mtx$gene2 <- factor(correlation.mtx$gene2, levels = unique(correlation.mtx$gene2))
+
+  correlation.plot <- ggplot(data = correlation.mtx, aes(x = gene, y = gene2, fill = correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(high = "red", mid = "white", low = "blue", limits = c(min, max), na.value = "grey50") +
+    theme_bw() +
+    labs(fill = "") +
+    theme(
+      axis.title = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1),
+      axis.text = element_text(face = "italic"),
+      panel.grid.major = element_blank(),
+      legend.position = "top",
+      aspect.ratio = 1
+    )
+
+  return(correlation.plot)
+}
+
+#' Generates a correlation rank plot
+#'
+#' @param input input dataset, can be a Seurat object or precomputed correlation matrix
+#' @param input.type Input type of input datasets. Arguments can be 'correlation.mtx' or 'Seurat'
+#' @param plot.gene Gene for which the correlation rank plot will be computed
+#' @param correlation.genes Genes that will be highlighted on the correlation rank plot (larger circles and labelled by name)
+#' @param min Minimum correlation values to be plotted. Smaller correlations will be shown as grey
+#' @param max Maximum correlation values to be plotted. Bigger correlations will be shown as grey
+#' @return A ggplot object indicating Spearman correlation between all genes in the genome and the chosen gene. Data points corresponding to genes passed to correlation.genes will be highlighted and labelled.
+
+
+plot.correlation.ranks <- function(input = seurat,
+                                   input.type = c("Seurat", "correlation.mtx"),
+                                   plot.gene = "Zfhx3",
+                                   correlation.genes = c(
+                                     "ONECUT1", "ONECUT2", "ONECUT3", "POU2F2", "ZFHX2", "ZFHX3",
+                                     "ZFHX4", "NFIA", "NFIB", "NFIX", "NEUROD2", "NEUROD6", "TCF4"
+                                   ),
+                                   min = -0.6,
+                                   max = 0.6) {
+  if (input.type == "correlation.mtx") {
+    gene.ordered.correlations <- data.frame(sort(input[plot.gene, ])) %>%
+      tibble::rownames_to_column("gene") %>%
+      dplyr::filter(gene != plot.gene)
+
+    colnames(gene.ordered.correlations) <- c("gene", "correlation")
+  } else if (input.type == "Seurat") {
+    data.mtx <- as.matrix(GetAssayData(input))
+
+    print("Calculate correlation ranks!")
+    gene.ordered.correlations <- cbind(
+      rownames(data.mtx),
+      unlist(pblapply(rownames(input), function(genename) {
+        return(cor(x = data.mtx[plot.gene, ], y = data.mtx[genename, ], method = "spearman"))
+      }))
+    )
+
+    colnames(gene.ordered.correlations) <- c("gene", "correlation")
+
+    gene.ordered.correlations <- data.frame(gene.ordered.correlations) %>%
+      dplyr::filter(!is.na(correlation)) %>%
+      dplyr::mutate(correlation = as.numeric(correlation)) %>%
+      dplyr::filter(gene != plot.gene) %>%
+      dplyr::arrange(desc(correlation))
+  } else {
+    print("input.type must be defined as Seurat or correlation.mtx")
+  }
+
+  gene.ordered.correlations$gene <- factor(gene.ordered.correlations$gene, levels = gene.ordered.correlations$gene)
+
+  index <- unlist(lapply(correlation.genes[-which(correlation.genes == plot.gene)], function(x) {
+    which(gene.ordered.correlations$gene == x)
+  }))
+
+  gene.ordered.correlations$label <- NA
+  gene.ordered.correlations$label[index] <- as.character(gene.ordered.correlations$gene[index])
+
+  rank.plot <- ggplot(gene.ordered.correlations, aes(x = gene, y = correlation, label = label)) +
+    geom_point(
+      color = ifelse(is.na(gene.ordered.correlations$label), "grey70", "red"),
+      size = ifelse(is.na(gene.ordered.correlations$label), 1, 3)
+    ) +
+    geom_text_repel(min.segment.length = 0, seed = 42, max.overlaps = Inf, box.padding = 1, fontface = "italic") +
+    scale_x_discrete(expand = c(0.05, 0)) +
+    theme_bw() +
+    xlab("Gene Rank") +
+    ylab("Spearman Correlation") +
+    ylim(c(min, max)) +
+    ggtitle(plot.gene) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+
+  return(rank.plot)
+}
+
+
+#' Plots gene expression and percentage of expressing cells in certain groups (logic of size and color coding of the dots is inverted relative to the DotPlot function in Seurat)
+#'
+#' @param input Seurat input dataset
+#' @param genes Genes that are supposed to be plotted
+#' @param time Seurat Ident by which data will be splitted to calculate mean gene expression and fraction of cells
+#' @return A ggplot object with normalized mean gene expression (indicated by the size of the circles) and percentage of expressing cells (indicated from blue to yellow).
+
+plot.expression.dynamics.from.Seurat <- function(input, genes, time, title) {
+  num.cells.expressing <- do.call(cbind, lapply(genes, function(x) {
+    exprs.values <- as.data.frame(GetAssayData(object = input, slot = "counts"))[x, ] %>%
+      t() %>%
+      as.data.frame() %>%
+      dplyr::mutate(age = input[[time]]) %>%
+      dplyr::group_by(age)
+
+    colnames(exprs.values)[1] <- "expression"
+
+    exprs.values <- exprs.values %>%
+      dplyr::group_by(age) %>%
+      dplyr::summarise(count2 = length(expression[expression > 0]))
+
+    return(exprs.values$count2)
+  }))
+
+  colnames(num.cells.expressing) <- genes
+
+  perc.expressing <- as.data.frame(GetAssayData(object = input, slot = "counts"))[genes, ] %>%
+    t() %>%
+    as.data.frame() %>%
+    dplyr::mutate(age = input[[time]]) %>%
+    dplyr::group_by(age) %>%
+    dplyr::count() %>%
+    dplyr::bind_cols(., as_tibble(num.cells.expressing)) %>%
+    as.data.frame() %>%
+    dplyr::mutate_if(is.numeric, function(v) {
+      v / .[, "n"]
+    }) %>%
+    dplyr::select(-n) %>%
+    tidyr::gather(key = gene, value = "percent", -age) %>%
+    dplyr::pull(percent)
+
+  ### normalization function
+  normalit <- function(x) {
+    x / (max(x))
+  }
+
+  mat <- as.data.frame(GetAssayData(object = input, slot = "counts"))[genes, ] %>%
+    t() %>%
+    as.data.frame() %>%
+    dplyr::mutate(age = input[[time]]) %>%
+    dplyr::group_by(age) %>%
+    dplyr::summarise_all(mean) %>%
+    dplyr::mutate_each(funs(normalit), all_of(genes)) %>%
+    as.data.frame() %>%
+    tidyr::gather(key = gene, value = "readcounts", -age) %>%
+    dplyr::mutate(percent = perc.expressing)
+
+  mat$gene <- factor(mat$gene, levels = genes)
+
+  gg <- ggplot(data = as.data.frame(lapply(mat, unlist)), aes(x = factor(age), y = factor(gene))) +
+    geom_count(aes(size = readcounts, color = percent)) +
+    scale_size_area(max_size = 10) +
+    scale_color_gradientn(colours = c("blue", "yellow"), limits = c(0, 1)) +
+    theme_classic() +
+    ggtitle(title) +
+    theme(
+      axis.text.y = element_text(size = 24, face = "italic"),
+      axis.title = element_blank(),
+      axis.text.x = element_text(size = 24, angle = 45, hjust = 1, vjust = 1),
+      legend.title = element_text(size = 20),
+      legend.title.align = 0.5,
+      legend.text = element_text(size = 20),
+      strip.text = element_text(size = 24, face = "bold"),
+      plot.title = element_text(face = "bold", size = 24)
+    )
+
+  return(gg)
+}
+```
+
+## Connect loom file from La Manno et al. 2020. 
+
+```{r Load loom file, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+dir <- "/Users/j76630as/Documents/tTF_paper_2020/scRNAseq/"
+
+setwd(paste0(dir, "/output/"))
+
+## connect sc.loom file downloaded from mousebrain.org
+sc.loom <- loomR::connect(filename = paste0(dir, "/input/dev_all.loom"), mode = "r+", skip.validate = TRUE)
+
+## Generate sc.meta file by extracting parameters from connected sc.loom file
+sc.meta <- data.frame(
+  sc.loom$col.attrs$Age[],
+  sc.loom$col.attrs$PseudoAge[],
+  sc.loom$col.attrs$Tissue[],
+  sc.loom$col.attrs$PseudoTissue[],
+  sc.loom$col.attrs$Class[],
+  sc.loom$col.attrs$Clusters[],
+  10000 / sc.loom$col.attrs$TotalUMI[],
+  sc.loom$col.attrs$CellID[],
+  sc.loom$col.attrs$SampleID[]
+)
+
+colnames(sc.meta) <- c("age", "pseudoage", "tissue", "pseudotissue", "class", "clusters", "normalization_factor", "cellID", "sampleID")
+```
+
+### Load forebrain scRNAseq data from La Manno et al. 2020
+
+We subset the data to annotated forebrain neurons and convert the data in a Seurat object.
+
+```{r Subset data to forebrain neurons, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+### Generate Forebrain-specific Seurat object
+
+tissue <- "Forebrain"
+celltype <- "Neuron"
+timepoints <- c("e9.0", "e10.0", "e11.0", "e12.0", "e12.5", "e13.0", "e13.5", "e14.0")
+
+tissue.id <- which(grepl(tissue, unique(sc.loom$col.attrs$Tissue[])) == TRUE)
+cell.id <- intersect(
+  which(sc.meta$tissue %in% unique(sc.loom$col.attrs$Tissue[])[tissue.id] & sc.meta$class == celltype),
+  which(sc.meta$age %in% timepoints)
+)
+
+exp.mat <- sc.loom[["matrix"]][cell.id, ]
+
+colnames(exp.mat) <- sc.loom$row.attrs$Gene[]
+rownames(exp.mat) <- sc.meta$cellID[cell.id]
+
+exc.seurat <- CreateSeuratObject(
+  counts = t(exp.mat),
+  meta.data = sc.meta[cell.id, ] %>%
+    as_tibble() %>%
+    tibble::column_to_rownames("cellID")
+)
+
+exc.seurat[["percent.mt"]] <- PercentageFeatureSet(exc.seurat, pattern = "^mt-")
+
+exc.seurat <- exc.seurat %>%
+  subset(subset = nFeature_RNA > 600 & nFeature_RNA < 6000 & percent.mt < 6) %>%
+  NormalizeData(verbose = FALSE) %>%
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+```
+
+To get a general feel for the data and to identify which clusters define which neuronal populations, we plot the data on a UMAP
+
+```{r UMAP of Forebrain neurons, echo = TRUE, fig.width = 15, fig.height = 8}
+
+cowplot::plot_grid(DimPlot(exc.seurat, reduction = "umap", group.by = "age") + theme(aspect.ratio = 1),
+  DimPlot(exc.seurat, reduction = "umap", group.by = "seurat_clusters") + theme(aspect.ratio = 1),
+  FeaturePlot(exc.seurat, features = c("Neurog2", "Ascl1", "Gad2", "Slc17a6")),
+  FeaturePlot(exc.seurat, features = c("Onecut2", "Zfhx3", "Zfhx4", "Nfia")),
+  FeaturePlot(exc.seurat, features = c("Nfib", "Neurod2", "Neurod6", "Reln")),
+  FeaturePlot(exc.seurat, features = c("Lhx6", "Meis2", "Foxg1", "Isl1")),
+  nrow = 2
+)
+```
+
+We subset the data to cortical excitatory neurons.
+
+```{r Color cortical excitatory neurons, echo = TRUE, fig.width = 15, fig.height = 4}
+
+exc.neurons.clusters <- c(0, 2, 4, 7, 16)
+
+exc.seurat$excitatory_neurons <- 0
+exc.seurat$excitatory_neurons[which(exc.seurat$seurat_clusters %in% exc.neurons.clusters)] <- 1
+
+overview <- cowplot::plot_grid(DimPlot(exc.seurat, reduction = "umap", group.by = "excitatory_neurons", cols = c("grey", "red")) +
+  NoLegend() +
+  theme(aspect.ratio = 1, plot.title = element_blank()),
+FeaturePlot(exc.seurat, features = c("Neurog2", "Tbr1", "Eomes", "Ascl1")) & NoLegend() & NoAxes() & theme(plot.title = element_text(face = "italic")),
+FeaturePlot(exc.seurat, features = c("Nfia", "Nfib", "Neurod2", "Neurod6")) & NoLegend() & NoAxes() & theme(plot.title = element_text(face = "italic")),
+nrow = 1
+)
+
+overview
+```
+
+```{r Subset to cortical excitatory neurons, echo = TRUE, fig.width = 15, fig.height = 4}
+
+exc.neurons.clusters <- c(0, 2, 4, 7, 16)
+
+exc.seurat$excitatory_neurons <- 0
+exc.seurat$excitatory_neurons[which(exc.seurat$seurat_clusters %in% exc.neurons.clusters)] <- 1
+
+overview <- cowplot::plot_grid(DimPlot(exc.seurat, reduction = "umap", group.by = "excitatory_neurons", cols = c("grey", "red")) +
+  NoLegend() +
+  theme(aspect.ratio = 1, plot.title = element_blank()),
+FeaturePlot(exc.seurat, features = c("Neurog2", "Tbr1", "Eomes", "Tcf4")) & NoLegend() & NoAxes() & theme(plot.title = element_text(face = "italic")),
+FeaturePlot(exc.seurat, features = c("Nfia", "Nfib", "Neurod2", "Neurod6")) & NoLegend() & NoAxes() & theme(plot.title = element_text(face = "italic")),
+nrow = 1
+)
+
+overview
+
+sub.seurat <- exc.seurat %>%
+  subset(subset = seurat_clusters %in% exc.neurons.clusters) %>%
+  ScaleData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", verbose = FALSE) %>%
+  RunPCA(npcs = 30, verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:30) %>%
+  FindNeighbors(dims = 1:30) %>%
+  FindClusters(resolution = 0.5)
+```
+
+```{r Analysis of cortical excitatory neurons, echo = TRUE, fig.width = 15, fig.height = 4}
+
+umaps <- FeaturePlot(sub.seurat, features = c(
+  "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4",
+  "Zfhx3", "Pbx3", "Meis1", "Meis2", "Tshz2", "Barhl2"
+), ncol = 6) &
+  NoLegend() & NoAxes() & theme(plot.title = element_text(face = "italic"))
+
+umaps
+```
+
+```{r Plot correlation ranks, echo=TRUE, message=FALSE, warning=FALSE, fig.width = 5, fig.height = 4}
+
+fb.corr.rank <- cowplot::plot_grid(
+  plot.correlation.ranks(
+    input = sub.seurat,
+    input.type = c("Seurat"),
+    plot.gene = "Zfhx3",
+    correlation.genes = c(
+      "Pou2f2", "Zfhx3", "Zfhx4", "Pbx3", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+    ),
+    min = -0.6,
+    max = 0.6
+  ),
+  plot.correlation.ranks(
+    input = sub.seurat,
+    input.type = c("Seurat"),
+    plot.gene = "Nfib",
+    correlation.genes = c(
+      "Pou2f2", "Zfhx3", "Zfhx4", "Pbx3", "Nfia", "Nfib", "Nfix", "Neurod2", "Neurod6", "Tcf4"
+    ),
+    min = -0.8,
+    max = 0.8
+  ),
+  ncol = 1
+)
+
+fb.corr.rank & theme(plot.title = element_text(face = "italic"))
+```
+
+Differential gene expression analysis to identify other TFs enriched in the Zfhx3-positive cluster 7.
+
+```{r Differential expression excitatory neurons, echo = TRUE, fig.width = 15, fig.height = 4}
+
+markers <- FindMarkers(sub.seurat, ident.1 = 7) %>%
+  tibble::rownames_to_column("gene") %>%
+  dplyr::filter(gene %in% TF.lst) %>%
+  dplyr::arrange(desc(avg_log2FC)) %>%
+  tibble::column_to_rownames("gene") %>%
+  dplyr::mutate(avg_log2FC = round(avg_log2FC, digits = 3)) %>%
+  dplyr::select(-p_val)
+```
+
+```{r Plots differential expression excitatory neurons, echo = TRUE, fig.width = 15, fig.height = 4}
+
+grid <- grid.arrange(DimPlot(sub.seurat, group.by = "seurat_clusters") + ggtitle("Clusters"),
+  tableGrob(rbind(head(markers, n = 6), tail(markers, n = 6)), theme = ttheme_default(base_size = 11.5)),
+  DimPlot(sub.seurat, group.by = "age") + ggtitle("Age"),
+  ncol = 3
+)
+```
+
+```{r Generate complete plot, echo = TRUE, fig.width = 15, fig.height = 13.5}
+
+complete <- cowplot::plot_grid(overview, umaps, grid, ncol = 1)
+
+complete
+
+cowplot::ggsave2("Cortical_neurons.png", dpi = 300)
+```
+
+```{r Include sessionInfo, echo = TRUE, fig.width = 10, fig.height = 6}
+
+sessionInfo()
+```
